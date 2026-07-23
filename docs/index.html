@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nes1 — TypeScript製 NES エミュレータ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="index.html">nes1</a> <span style="color:var(--accent)">▮▮</span></h1>
+  <div class="subtitle">TypeScript でゼロから作る Web ブラウザ NES(ファミコン)エミュレータ — 学習用プロジェクト</div>
+</header>
+
+<div class="emu-wrap">
+  <div>
+    <canvas id="screen" width="256" height="240"></canvas>
+    <p id="status">ROM を読み込んでください(現在は第1章: 画面はまだ動きません)</p>
+  </div>
+  <div class="emu-panel">
+    <h2>🎮 操作</h2>
+    <p>
+      <input type="file" id="rom-input" accept=".nes">
+    </p>
+    <p>
+      <button id="btn-run" disabled>▶ 実行</button>
+      <button id="btn-pause" class="secondary" disabled>⏸ 一時停止</button>
+      <button id="btn-reset" class="secondary" disabled>⟳ リセット</button>
+    </p>
+    <table>
+      <tr><th>NES</th><th>キー</th></tr>
+      <tr><td>十字キー</td><td><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></td></tr>
+      <tr><td>A</td><td><kbd>X</kbd></td></tr>
+      <tr><td>B</td><td><kbd>Z</kbd></td></tr>
+      <tr><td>START</td><td><kbd>Enter</kbd></td></tr>
+      <tr><td>SELECT</td><td><kbd>Shift</kbd></td></tr>
+    </table>
+  </div>
+  <div class="emu-panel">
+    <h2>📖 解説ドキュメント(章立て)</h2>
+    <nav class="chapters">
+      <ol>
+        <li><a href="chapters/01-overview.html">プロジェクト概要と NES アーキテクチャ</a></li>
+        <li>6502 CPU コア実装 <small>(準備中)</small></li>
+        <li>PPU(グラフィック)実装 <small>(準備中)</small></li>
+        <li>入力・コントローラー対応 <small>(準備中)</small></li>
+        <li>APU(音声)実装 <small>(準備中)</small></li>
+        <li>ROM ローダーとマッパー対応拡張 <small>(準備中)</small></li>
+        <li>デバッグ UI・パフォーマンス最適化 <small>(準備中)</small></li>
+      </ol>
+    </nav>
+    <p style="color:var(--sub);font-size:0.85rem">
+      各章は「実装 → ブランチ作成 → push → 解説追加」のサイクルで進めています。
+      ソースコードは <a href="https://github.com/kisana-me/nes1">GitHub</a> にあります。
+    </p>
+  </div>
+</div>
+
+<footer class="site">
+  nes1 — 学習用 NES エミュレータ / 同梱ゲームは完全オリジナルです
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

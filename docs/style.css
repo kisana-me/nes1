@@ -1,0 +1,178 @@
+:root {
+  --bg: #0f1220;
+  --panel: #1a1f35;
+  --panel2: #232948;
+  --text: #e8eaf6;
+  --sub: #9aa3c7;
+  --accent: #e85d75;
+  --accent2: #5dc9e8;
+  --code-bg: #12152a;
+  --border: #313a63;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+  line-height: 1.85;
+}
+
+header.site {
+  background: linear-gradient(135deg, #1a1f35, #2a1f45);
+  border-bottom: 2px solid var(--accent);
+  padding: 1.2rem 1.5rem;
+}
+header.site h1 { margin: 0; font-size: 1.4rem; }
+header.site h1 a { color: var(--text); text-decoration: none; }
+header.site .subtitle { color: var(--sub); font-size: 0.9rem; }
+
+main.doc {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+h2 {
+  border-left: 5px solid var(--accent);
+  padding-left: 0.6rem;
+  margin-top: 2.5rem;
+  font-size: 1.35rem;
+}
+h3 {
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 0.2rem;
+  margin-top: 2rem;
+  font-size: 1.1rem;
+  color: var(--accent2);
+}
+
+a { color: var(--accent2); }
+
+p code, li code, td code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.08rem 0.35rem;
+  font-size: 0.88em;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+pre code { font-family: "SF Mono", "Consolas", "Menlo", monospace; font-size: 0.85rem; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+}
+th { background: var(--panel2); }
+tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+.note, .warn, .try {
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  margin: 1.2rem 0;
+  border-left: 5px solid;
+}
+.note { background: rgba(93,201,232,0.08); border-color: var(--accent2); }
+.warn { background: rgba(232,93,117,0.08); border-color: var(--accent); }
+.try  { background: rgba(120,232,93,0.07); border-color: #78e85d; }
+.note::before { content: "📝 メモ"; display: block; font-weight: bold; color: var(--accent2); }
+.warn::before { content: "⚠️ 注意"; display: block; font-weight: bold; color: var(--accent); }
+.try::before  { content: "🧪 動作確認"; display: block; font-weight: bold; color: #78e85d; }
+
+nav.chapters { margin: 1rem 0; }
+nav.chapters ol { padding-left: 1.2rem; }
+nav.chapters li { margin: 0.4rem 0; }
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  margin: 3rem 0 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+footer.site {
+  text-align: center;
+  color: var(--sub);
+  font-size: 0.8rem;
+  padding: 2rem 0;
+}
+
+/* ===== emulator page ===== */
+.emu-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.2rem;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 1.5rem;
+}
+canvas#screen {
+  image-rendering: pixelated;
+  width: 512px;
+  max-width: 100%;
+  background: #000;
+  border: 3px solid var(--border);
+  border-radius: 6px;
+}
+.emu-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  min-width: 260px;
+  max-width: 380px;
+  font-size: 0.9rem;
+}
+.emu-panel h2 { margin-top: 0.5rem; font-size: 1.05rem; }
+.emu-panel button, .emu-panel input[type=file]::file-selector-button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin: 0.15rem 0.15rem 0.15rem 0;
+}
+.emu-panel button.secondary { background: var(--panel2); border: 1px solid var(--border); }
+.emu-panel button:disabled { opacity: 0.4; cursor: default; }
+kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-bottom-width: 3px;
+  border-radius: 5px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.85em;
+}
+#status { color: var(--sub); min-height: 1.4em; }
+
+/* debug UI (chapter 7) */
+.debug-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  padding: 0 1.5rem 1.5rem;
+}
+.debug-grid canvas { border: 1px solid var(--border); image-rendering: pixelated; background: #000; }
+.debug-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.8rem; }
+.debug-box h3 { margin: 0 0 0.5rem; border: none; }
+#cpu-trace { font-family: monospace; white-space: pre; font-size: 0.72rem; max-height: 260px; overflow-y: auto; }

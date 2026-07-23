@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第1章 プロジェクト概要と NES アーキテクチャ — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第1章</h1>
+  <div class="subtitle">プロジェクト概要と NES アーキテクチャ</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+このプロジェクトでは、<strong>NES(Nintendo Entertainment System / ファミコン)のエミュレータを
+TypeScript でゼロから作りながら</strong>、コンピュータアーキテクチャの基礎と言語を学びます。
+第1章ではコードはほとんど書かず、「NES とはどういう機械なのか」「エミュレータとは何をするプログラムなのか」を
+理解することがゴールです。
+</p>
+
+<h2>エミュレータとは何か</h2>
+<p>
+エミュレータとは、<strong>ある機械(ハードウェア)の振る舞いを、別の機械の上でソフトウェアとして再現するプログラム</strong>です。
+NES エミュレータの場合、再現する対象は次の 3 つのチップ+周辺回路です。
+</p>
+<ul>
+  <li><strong>CPU</strong> — プログラム(機械語)を 1 命令ずつ実行する頭脳</li>
+  <li><strong>PPU</strong> — 画面(背景とスプライト)を描く映像チップ</li>
+  <li><strong>APU</strong> — 音(矩形波・三角波・ノイズなど)を鳴らす音源</li>
+</ul>
+<p>
+つまりエミュレータの本体は、巨大な <code>while</code> ループの中で
+「CPU を 1 命令進める → その消費サイクル分だけ PPU と APU も進める」を
+1 秒間に約 179 万回(CPU クロック 1.789773 MHz)繰り返すプログラムです。
+ゲーム側から見ると、本物のハードの上で動いているのと区別が付きません。
+</p>
+
+<h2>NES の全体像</h2>
+<pre><code>┌─────────────────────────────────────────────┐
+│                  NES 本体                     │
+│                                             │
+│  ┌─────────┐  CPUバス   ┌─────────────────┐  │
+│  │  CPU     │◄────────►│ WRAM 2KB         │  │
+│  │ (RP2A03) │           └─────────────────┘  │
+│  │ 6502互換 │  $2000-   ┌─────────────────┐  │
+│  │ +APU内蔵 │◄────────►│ PPU (RP2C02)     │  │
+│  └────┬────┘   $2007    │  └ VRAM 2KB      │  │
+│       │                 │  └ OAM 256B      │  │
+│  $4016/4017             │  └ パレットRAM    │  │
+│       ▼                 └────────┬────────┘  │
+│  ┌─────────┐                     │           │
+│  │コントローラ│                     ▼           │
+│  └─────────┘              テレビへ映像出力      │
+└──────────┬──────────────────┬───────────────┘
+           │ PRG-ROM          │ CHR-ROM
+      ┌────┴──────────────────┴────┐
+      │        カセット(ROM)         │
+      │   +マッパー(バンク切替回路)    │
+      └────────────────────────────┘</code></pre>
+
+<h3>スペック早見表</h3>
+<table>
+  <tr><th>部品</th><th>内容</th></tr>
+  <tr><td>CPU</td><td>リコー RP2A03(MOS 6502 互換、BCD 無効、APU 内蔵)約 1.79 MHz</td></tr>
+  <tr><td>WRAM</td><td>2KB(たった 2048 バイト!)</td></tr>
+  <tr><td>PPU</td><td>リコー RP2C02。解像度 256×240、同時発色 25 色、スプライト 64 枚</td></tr>
+  <tr><td>VRAM</td><td>2KB(ネームテーブル用)+ パレット RAM 32B + OAM 256B</td></tr>
+  <tr><td>APU</td><td>矩形波×2、三角波、ノイズ、DMC(サンプル再生)の 5 チャンネル</td></tr>
+  <tr><td>ROM</td><td>カセット側に PRG-ROM(プログラム)と CHR-ROM(絵のデータ)</td></tr>
+</table>
+
+<div class="note">
+現代の PC はメモリが数十 GB ありますが、NES の作業メモリは 2KB です。
+このテキストの HTML ファイルよりずっと小さいサイズで、あの名作ゲームたちが動いていました。
+制約の中の工夫を知ることが、このプロジェクトの面白さの半分を占めます。
+</div>
+
+<h2>CPU から見た世界 — メモリマップ</h2>
+<p>
+6502 CPU は 16 ビットのアドレス(<code>$0000</code>〜<code>$FFFF</code> の 64KB 空間)しか知りません。
+CPU にとって「PPU に絵を頼む」ことも「コントローラーを読む」ことも、
+すべて<strong>特定のアドレスへの読み書き</strong>として行われます。これを
+<strong>メモリマップド I/O</strong> と呼びます。
+</p>
+<table>
+  <tr><th>アドレス範囲</th><th>何があるか</th></tr>
+  <tr><td><code>$0000-$07FF</code></td><td>WRAM 2KB($0800-$1FFF には同じものが 3 回ミラーされて見える)</td></tr>
+  <tr><td><code>$2000-$2007</code></td><td>PPU レジスタ 8 個($3FFF まで 8 バイト周期でミラー)</td></tr>
+  <tr><td><code>$4000-$4013</code></td><td>APU レジスタ</td></tr>
+  <tr><td><code>$4014</code></td><td>OAM DMA(スプライトデータの一括転送)</td></tr>
+  <tr><td><code>$4016 / $4017</code></td><td>コントローラー 1P / 2P</td></tr>
+  <tr><td><code>$6000-$7FFF</code></td><td>カセット上の拡張 RAM(セーブ用電池付きのことも)</td></tr>
+  <tr><td><code>$8000-$FFFF</code></td><td>PRG-ROM(ゲームプログラム本体)</td></tr>
+</table>
+<p>
+エミュレータではこの表をそのまま <code>Bus</code>(バス)というクラスの
+<code>read(addr)</code> / <code>write(addr, value)</code> に実装します。
+「アドレスによって行き先を振り分ける switch 文」がバスの正体です。
+</p>
+
+<h2>カセットと iNES フォーマット</h2>
+<p>
+実機ではゲームはカセット(ROM チップ)として供給されました。エミュレータの世界では、
+カセットの中身を吸い出して 1 つのファイルにした <strong>iNES フォーマット(拡張子 .nes)</strong>が標準です。
+構造はシンプルで、16 バイトのヘッダの後に PRG-ROM と CHR-ROM がそのまま並びます。
+</p>
+<pre><code>+--------------------+
+| ヘッダ 16 バイト      |  "NES" + $1A で始まる
+|  - PRG-ROM サイズ    |  16KB 単位
+|  - CHR-ROM サイズ    |  8KB 単位
+|  - マッパー番号 など   |
++--------------------+
+| (トレーナー 512B)     |  ※あれば
++--------------------+
+| PRG-ROM             |  プログラム本体
++--------------------+
+| CHR-ROM             |  グラフィックデータ
++--------------------+</code></pre>
+<p>
+<strong>マッパー</strong>とはカセット側に載っている「バンク切り替え回路」のことです。
+CPU から見える ROM 空間は 32KB しかないため、それより大きいゲームは
+マッパーで ROM の一部を差し替えながら動きます。本プロジェクトでは、まず回路なしの
+<strong>NROM(マッパー 0)</strong>だけに対応し、第6章で MMC1 や MMC3 などに拡張します。
+</p>
+
+<h2>1 フレームの流れ</h2>
+<p>NES のゲームは次のサイクルを 1 秒間に約 60 回繰り返します。</p>
+<ol>
+  <li>PPU が画面を上から 1 ラインずつ描画していく(240 ライン)</li>
+  <li>描画が終わると PPU が CPU に <strong>NMI(割り込み)</strong>で「描画終わったよ」と知らせる</li>
+  <li>CPU は VBlank(画面外走査期間)の間に、次のフレームの絵の内容を PPU に書き込む</li>
+  <li>その間もゲームロジック(入力を読む、キャラを動かす、音を更新する)が走る</li>
+</ol>
+<p>
+CPU と PPU は<strong>並行して動く別々のチップ</strong>で、PPU は CPU の 3 倍の速度で動きます。
+エミュレータでは「CPU が n サイクル使ったら PPU を 3n サイクル進める」という方法で
+この並行動作を再現します(キャッチアップ方式)。
+</p>
+
+<h2>このプロジェクトの構成</h2>
+<pre><code>nes1/
+├── src/            エミュレータ本体 (TypeScript)
+│   ├── main.ts     ブラウザ UI・エントリポイント
+│   ├── cpu.ts      6502 CPU        (第2章)
+│   ├── bus.ts      メモリバス       (第2章)
+│   ├── cartridge.ts iNES ローダー   (第2章, 第6章)
+│   ├── ppu.ts      映像            (第3章)
+│   ├── controller.ts 入力          (第4章)
+│   ├── apu.ts      音声            (第5章)
+│   └── mappers/    マッパー各種     (第6章)
+├── game/           完全オリジナルのテスト用ゲーム (第4章)
+├── tools/          ゲーム ROM を作るミニアセンブラ
+├── tests/          ヘッドレステスト
+└── docs/           この解説サイト + ビルド済みエミュレータ (GitHub Pages)</code></pre>
+
+<h3>使う技術</h3>
+<ul>
+  <li><strong>TypeScript</strong> — 型があることで「このレジスタは 8 ビット」といった制約をコードで表現しやすい</li>
+  <li><strong>Canvas API</strong> — PPU が生成した 256×240 のピクセルバッファを <code>putImageData</code> で描画</li>
+  <li><strong>Web Audio API</strong> — APU が生成した波形をブラウザで再生(第5章)</li>
+  <li><strong>esbuild</strong> — TypeScript を 1 つの JS にバンドル。ビルドは一瞬</li>
+</ul>
+
+<div class="warn">
+このプロジェクトでは既存の商用ゲーム ROM は一切使用しません。
+動作確認には、第4章で作る<strong>完全オリジナルの 2D プラットフォーマーゲーム</strong>
+(オリジナルキャラクター・オリジナル世界観)を使います。
+</div>
+
+<h2>開発の進め方</h2>
+<p>各章は次のサイクルで進めます。</p>
+<ol>
+  <li>機能を実装する</li>
+  <li>git で新規ブランチを切る(例: <code>feature/02-cpu-core</code>)</li>
+  <li>GitHub に push する</li>
+  <li>この解説サイトに 1 章分の解説を追加する</li>
+</ol>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li>リポジトリを clone して <code>npm install</code></li>
+  <li><code>npm run build</code> — エラーなく <code>docs/app.js</code> が生成されること</li>
+  <li><code>npm run serve</code> を実行し、表示された URL をブラウザで開く</li>
+  <li>黒い画面に灰色のノイズ風パターンと「nes1 - chapter 01」の文字が表示されれば OK</li>
+</ol>
+</div>
+
+<div class="pager">
+  <span></span>
+  <a href="02-cpu.html">第2章 6502 CPU コア実装 →</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>

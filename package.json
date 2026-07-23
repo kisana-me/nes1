@@ -1,0 +1,22 @@
+{
+  "name": "nes1",
+  "version": "0.1.0",
+  "description": "Web-based NES (Famicom) emulator written in TypeScript, built chapter by chapter for learning.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=esm --outfile=docs/app.js",
+    "watch": "esbuild src/main.ts --bundle --format=esm --outfile=docs/app.js --watch",
+    "serve": "esbuild src/main.ts --bundle --format=esm --outfile=docs/app.js --servedir=docs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kisana-me/nes1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2"
+  }
+}
