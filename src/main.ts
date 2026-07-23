@@ -1,29 +1,76 @@
-// nes1 エントリポイント
-// 第1章時点ではプレースホルダー画面を描くだけ。
-// 以降の章で CPU / PPU / APU / コントローラーを組み込んでいく。
+// nes1 ブラウザ UI エントリポイント
+//
+// ROM ファイルを読み込み、requestAnimationFrame ごとに 1 フレーム実行して
+// PPU のフレームバッファを Canvas へ転送する。
+
+import { Nes } from "./nes";
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 const statusEl = document.getElementById("status")!;
+const romInput = document.getElementById("rom-input") as HTMLInputElement;
+const btnRun = document.getElementById("btn-run") as HTMLButtonElement;
+const btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
+const btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
 
-function drawPlaceholder(): void {
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, 256, 240);
-  // NES 実機の起動直後をイメージしたグレーのノイズ風パターン
-  const img = ctx.createImageData(256, 240);
-  for (let i = 0; i < img.data.length; i += 4) {
-    const v = Math.random() < 0.5 ? 16 : 32;
-    img.data[i] = v;
-    img.data[i + 1] = v;
-    img.data[i + 2] = v + 8;
-    img.data[i + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  ctx.fillStyle = "#e8eaf6";
-  ctx.font = "10px monospace";
-  ctx.fillText("nes1 - chapter 01", 8, 120);
-  ctx.fillText("CPU/PPU/APU not implemented yet", 8, 134);
+let nes: Nes | null = null;
+let running = false;
+let rafId = 0;
+
+const imageData = ctx.createImageData(256, 240);
+const imagePixels = new Uint32Array(imageData.data.buffer);
+
+function drawFrame(): void {
+  if (!nes) return;
+  imagePixels.set(nes.frameBuffer);
+  ctx.putImageData(imageData, 0, 0);
 }
 
-drawPlaceholder();
-statusEl.textContent = "第1章: プロジェクト基盤のみ。第2章以降で命が吹き込まれます。";
+function loop(): void {
+  if (!nes || !running) return;
+  nes.runFrame();
+  drawFrame();
+  rafId = requestAnimationFrame(loop);
+}
+
+function setRunning(r: boolean): void {
+  running = r;
+  btnRun.disabled = !nes || r;
+  btnPause.disabled = !nes || !r;
+  btnReset.disabled = !nes;
+  if (r) {
+    rafId = requestAnimationFrame(loop);
+  } else {
+    cancelAnimationFrame(rafId);
+  }
+}
+
+romInput.addEventListener("change", async () => {
+  const file = romInput.files?.[0];
+  if (!file) return;
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+    nes = new Nes(data);
+    statusEl.textContent =
+      `${file.name} を読み込みました (PRG ${nes.cart.prgRom.length / 1024}KB, ` +
+      `CHR ${nes.cart.chrRom.length / 1024}KB, マッパー ${nes.cart.mapperId})`;
+    setRunning(true);
+  } catch (e) {
+    nes = null;
+    setRunning(false);
+    statusEl.textContent = `読み込み失敗: ${e instanceof Error ? e.message : e}`;
+  }
+});
+
+btnRun.addEventListener("click", () => setRunning(true));
+btnPause.addEventListener("click", () => setRunning(false));
+btnReset.addEventListener("click", () => {
+  nes?.reset();
+});
+
+// 初期画面
+ctx.fillStyle = "#000";
+ctx.fillRect(0, 0, 256, 240);
+ctx.fillStyle = "#e8eaf6";
+ctx.font = "10px monospace";
+ctx.fillText("nes1 - load a .nes ROM to start", 8, 120);

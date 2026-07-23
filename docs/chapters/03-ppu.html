@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第3章 PPU(グラフィック)実装 — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第3章</h1>
+  <div class="subtitle">PPU(グラフィック)実装</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+NES の映像チップ <strong>PPU (Picture Processing Unit)</strong> を実装し、
+エミュレータに「目に見える画面」を与えます。エミュレータ開発の中で最も複雑な部分です。
+この章が終わると、ROM が指定した背景とスプライトが Canvas に表示されます。
+</p>
+<p>実装したファイル:</p>
+<ul>
+  <li><code>src/ppu.ts</code> — PPU 本体(レジスタ、VRAM、スキャンライン描画)</li>
+  <li><code>src/nes.ts</code> — CPU と PPU を同期して動かす本体クラス</li>
+  <li><code>src/main.ts</code> — ROM 読み込みと Canvas 描画ループ</li>
+</ul>
+
+<h2>PPU の考え方 — 「ビットマップ」ではなく「タイル」</h2>
+<p>
+現代の画面は「全ピクセルの色の配列(フレームバッファ)」ですが、
+256×240×1 バイトでも約 60KB —— NES の VRAM(2KB)には全く入りません。
+そこで NES は画面を <strong>8×8 ピクセルのタイルの敷き詰め</strong>として表現します。
+</p>
+<pre><code>パターンテーブル (CHR-ROM)     ネームテーブル (VRAM)        画面
+「タイルの絵の辞書」            「どこにどのタイルを置くか」
+┌────┬────┐                ┌──┬──┬──┬──┐
+│ 🌱 │ 🧱 │  タイル0,1,...   │ 1│ 1│ 1│ 1│ ← 32x30 個の    🧱🧱🧱🧱
+│ ⛅ │ 🚪 │  256 個 x 2 面   │ 0│ 2│ 0│ 0│    タイル番号  → 🌱⛅🌱🌱
+└────┴────┘                └──┴──┴──┴──┘</code></pre>
+<ul>
+  <li><strong>パターンテーブル</strong> ($0000-$1FFF, カセットの CHR-ROM) — タイルの絵。8×8 ピクセル × 2bit = 16 バイト/枚</li>
+  <li><strong>ネームテーブル</strong> ($2000-$2FFF, VRAM) — 32×30 = 960 個のタイル番号で 1 画面</li>
+  <li><strong>属性テーブル</strong> — ネームテーブル末尾 64 バイト。16×16 ピクセルのブロックごとにパレット(色セット)を指定</li>
+  <li><strong>パレット RAM</strong> ($3F00-) — 64 色のマスターパレットから使う色を選ぶ</li>
+</ul>
+
+<h3>タイル 1 枚 = 2 ビットプレーン</h3>
+<p>
+タイルの各ピクセルは 0〜3 の 2 ビット。これを「ビットプレーン」2 枚に分けて格納します。
+</p>
+<pre><code>plane0 (下位bit)   plane1 (上位bit)   合成結果 (ピクセル値 0-3)
+0 1 1 0 ...        0 0 1 1 ...        0 1 3 2 ...
+
+const lo = chr[tile*16 + y];      // plane0
+const hi = chr[tile*16 + y + 8];  // plane1
+color = ((hi &gt;&gt; bit) &amp; 1) &lt;&lt; 1 | ((lo &gt;&gt; bit) &amp; 1);</code></pre>
+<p>
+値 0 は「透明」。パレット値 0 のピクセルには背景色($3F00)が表示されます。
+</p>
+
+<h2>スプライト — 動くもの担当</h2>
+<p>
+背景タイルとは別に、PPU は最大 64 枚の<strong>スプライト</strong>(自由な位置に置ける 8×8/8×16 タイル)を持ちます。
+スプライトの情報は <strong>OAM</strong> という専用メモリに 4 バイト/枚で入っています:
+</p>
+<table>
+  <tr><th>バイト</th><th>内容</th></tr>
+  <tr><td>0</td><td>Y 座標(表示位置 - 1)</td></tr>
+  <tr><td>1</td><td>タイル番号</td></tr>
+  <tr><td>2</td><td>属性: パレット、左右/上下反転、背景との前後関係</td></tr>
+  <tr><td>3</td><td>X 座標</td></tr>
+</table>
+<p>
+毎フレーム、ゲームは <code>$4014</code> に書き込むだけで RAM の 256 バイトを OAM へ一括転送できます
+(<strong>OAM DMA</strong>)。この間 CPU は 513 サイクル停止します —— <code>nes.ts</code> では
+<code>cpu.stall</code> に加算して再現しています。
+</p>
+<p>実機の制約もそのまま実装しています:</p>
+<ul>
+  <li>1 スキャンラインに表示できるスプライトは <strong>8 枚まで</strong>(9 枚目からは消える。昔のゲームのチラつきの原因)</li>
+  <li><strong>スプライト 0 ヒット</strong>: スプライト 0 番と背景の不透明ピクセルが重なると
+      ステータスレジスタにフラグが立つ。ゲームはこれで「画面の分割位置」を検出する</li>
+</ul>
+
+<h2>CPU から PPU をどう操作するか</h2>
+<p>PPU は CPU バスの $2000-$2007 に 8 個のレジスタとして見えています。</p>
+<table>
+  <tr><th>アドレス</th><th>名前</th><th>役割</th></tr>
+  <tr><td>$2000</td><td>PPUCTRL</td><td>NMI 有効化、スプライトサイズ、パターンテーブル選択など</td></tr>
+  <tr><td>$2001</td><td>PPUMASK</td><td>背景/スプライトの表示 ON/OFF</td></tr>
+  <tr><td>$2002</td><td>PPUSTATUS</td><td>VBlank・スプライト0ヒットの状態(読むと VBlank フラグはクリア)</td></tr>
+  <tr><td>$2003/4</td><td>OAMADDR/DATA</td><td>OAM への直接アクセス</td></tr>
+  <tr><td>$2005</td><td>PPUSCROLL</td><td>スクロール位置(X→Y の順に 2 回書く)</td></tr>
+  <tr><td>$2006</td><td>PPUADDR</td><td>VRAM アドレス(上位→下位の順に 2 回書く)</td></tr>
+  <tr><td>$2007</td><td>PPUDATA</td><td>VRAM の読み書き(アドレスは自動インクリメント)</td></tr>
+</table>
+
+<div class="note">
+<strong>$2007 の読み出しは 1 テンポ遅れる</strong>のが実機の仕様です。読み出した値は内部バッファに入り、
+返ってくるのは「前回読んだ値」。正しい値が欲しければ 2 回読む必要があります
+(パレット領域だけは即時)。テスト <code>testPpuDataBuffer</code> でこの挙動を検証しています。
+</div>
+
+<h2>スクロールの心臓部 — loopy レジスタ</h2>
+<p>
+PPU 内部には <code>v</code>(現在の VRAM アドレス)と <code>t</code>(スクロール設定のテンポラリ)という
+2 つの 15 ビットレジスタがあります。ビット配置が絶妙で、<strong>スクロール座標と VRAM アドレスが同じレジスタで表現</strong>されます:
+</p>
+<pre><code> yyy NN YYYYY XXXXX
+ │   │  │     └─ coarse X: タイル単位の X 位置 (0-31)
+ │   │  └─────── coarse Y: タイル単位の Y 位置 (0-29)
+ │   └────────── ネームテーブル選択 (4 画面のどれか)
+ └────────────── fine Y: タイル内の Y (0-7)</code></pre>
+<p>描画中、v は次のように動きます(エミュレータでも同じ順序を再現):</p>
+<ol>
+  <li>タイルを 1 枚描くたび coarse X++(31 を超えたら隣のネームテーブルへ)</li>
+  <li>ライン末尾 (dot 256) で fine Y++</li>
+  <li>dot 257 で「水平成分だけ」t から v へコピー(次のラインは左端から)</li>
+  <li>プリレンダーラインの dot 280 で「垂直成分」を t から v へコピー(次のフレームは先頭から)</li>
+</ol>
+<p>
+この仕組みのおかげで、ゲームは<strong>フレーム途中でスクロール値を書き換えて画面を分割</strong>できます
+(ステータスバーは固定、下だけスクロール、など)。ライン単位で v を参照して描画する本実装でも、
+この分割テクニックはそのまま動きます。
+</p>
+
+<h2>タイミング — CPU と PPU の同期</h2>
+<p>
+PPU は CPU の 3 倍のクロックで動き、1 フレーム = 262 スキャンライン × 341 ドットです。
+<code>nes.ts</code> の中心はこのループ:
+</p>
+<pre><code>step(): number {
+  const cpuCycles = this.cpu.step();       // CPU を 1 命令
+  for (let i = 0; i &lt; cpuCycles * 3; i++) {
+    this.ppu.tick();                       // その 3 倍 PPU を進める
+  }
+  return cpuCycles;
+}</code></pre>
+<p>1 フレームの流れ:</p>
+<pre><code>ライン 0-239   : 可視領域。ライン単位でフレームバッファに描画
+ライン 240     : 何もしない
+ライン 241 dot1: VBlank フラグ ON → (有効なら) CPU へ NMI!
+ライン 242-260 : VBlank 継続。ゲームはこの間に VRAM を更新する
+ライン 261     : プリレンダー。フラグを全クリアして次フレームの準備</code></pre>
+<p>
+描画は「ドット単位」ではなく「ライン単位」でまとめて行う<strong>スキャンライン方式</strong>を採用しました。
+精度と速度のバランスが良く、大半のゲームはこれで正しく動きます。
+</p>
+
+<h2>Canvas への転送</h2>
+<p>
+PPU が作るのは「パレット番号の並び」です。これを RGBA に変換して
+<code>Uint32Array</code> のフレームバッファへ書き、毎フレーム
+<code>putImageData</code> 一発で Canvas に転送します。
+</p>
+<pre><code>const imageData = ctx.createImageData(256, 240);
+const imagePixels = new Uint32Array(imageData.data.buffer); // 同じメモリを 32bit で見る
+
+imagePixels.set(nes.frameBuffer);  // コピー 1 回
+ctx.putImageData(imageData, 0, 0);</code></pre>
+<p>
+1 ピクセルずつ <code>fillRect</code> する方法に比べて桁違いに高速です。
+CSS 側で <code>image-rendering: pixelated</code> を指定し、拡大してもドットがぼやけないようにしています。
+</p>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li><code>npm test</code> — CPU テストに加え、PPU テスト 9 件が pass すること。
+    特に <code>testBackgroundRendering</code> は「機械語プログラムがパレットとネームテーブルを設定 →
+    実際に 5 フレーム実行 → フレームバッファの色を検証」というエンドツーエンドテストです</li>
+  <li><code>npm run serve</code> でブラウザを開き、手持ちの自作/フリー .nes ファイル(NROM)を読み込むと画面が表示されます
+    (テスト用のオリジナルゲーム ROM は次章で作ります!)</li>
+</ol>
+</div>
+
+<div class="pager">
+  <a href="02-cpu.html">← 第2章 6502 CPU コア</a>
+  <a href="04-controller.html">第4章 コントローラーとオリジナルゲーム →</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>
