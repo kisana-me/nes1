@@ -4,6 +4,20 @@
 // PPU のフレームバッファを Canvas へ転送する。
 
 import { Nes } from "./nes";
+import { Button } from "./controller";
+
+// キーボード → コントローラーのマッピング
+const KEYMAP: Record<string, number> = {
+  KeyX: Button.A,
+  KeyZ: Button.B,
+  ShiftLeft: Button.Select,
+  ShiftRight: Button.Select,
+  Enter: Button.Start,
+  ArrowUp: Button.Up,
+  ArrowDown: Button.Down,
+  ArrowLeft: Button.Left,
+  ArrowRight: Button.Right,
+};
 
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
@@ -60,6 +74,38 @@ romInput.addEventListener("change", async () => {
     setRunning(false);
     statusEl.textContent = `読み込み失敗: ${e instanceof Error ? e.message : e}`;
   }
+});
+
+window.addEventListener("keydown", (e) => {
+  const btn = KEYMAP[e.code];
+  if (btn && nes) {
+    nes.controller.buttons1 |= btn;
+    e.preventDefault();
+  }
+});
+window.addEventListener("keyup", (e) => {
+  const btn = KEYMAP[e.code];
+  if (btn && nes) {
+    nes.controller.buttons1 &= ~btn;
+    e.preventDefault();
+  }
+});
+
+/** 同梱のオリジナルゲームを fetch してロードする */
+async function loadBundledGame(): Promise<void> {
+  try {
+    const res = await fetch("mosshop.nes");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = new Uint8Array(await res.arrayBuffer());
+    nes = new Nes(data);
+    statusEl.textContent = "同梱ゲーム『MOSS HOP』を読み込みました。Enter でスタート!";
+    setRunning(true);
+  } catch (e) {
+    statusEl.textContent = `同梱ゲームの読み込みに失敗: ${e instanceof Error ? e.message : e}`;
+  }
+}
+document.getElementById("btn-sample")?.addEventListener("click", () => {
+  void loadBundledGame();
 });
 
 btnRun.addEventListener("click", () => setRunning(true));

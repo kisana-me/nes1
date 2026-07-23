@@ -5,6 +5,7 @@ import { Bus } from "./bus";
 import { Ppu } from "./ppu";
 import { Cartridge } from "./cartridge";
 import { Mapper } from "./mappers/mapper";
+import { StandardController } from "./controller";
 
 export class Nes {
   readonly cart: Cartridge;
@@ -12,6 +13,7 @@ export class Nes {
   readonly bus: Bus;
   readonly cpu: Cpu;
   readonly ppu: Ppu;
+  readonly controller: StandardController;
 
   constructor(romData: Uint8Array) {
     this.cart = new Cartridge(romData);
@@ -19,9 +21,11 @@ export class Nes {
     this.bus = new Bus(this.mapper);
     this.cpu = new Cpu(this.bus);
     this.ppu = new Ppu(this.mapper);
+    this.controller = new StandardController();
 
     // 配線
     this.bus.ppu = this.ppu;
+    this.bus.controller = this.controller;
     this.ppu.onNmi = () => this.cpu.requestNmi();
     // OAM DMA は CPU を 513 サイクル停止させる
     this.bus.onOamDma = () => {

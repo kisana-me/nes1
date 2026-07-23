@@ -1266,6 +1266,41 @@ var Ppu = class {
   }
 };
 
+// src/controller.ts
+var StandardController = class {
+  /** 1P のボタン状態 (Button のビット和) */
+  buttons1 = 0;
+  /** 2P のボタン状態 */
+  buttons2 = 0;
+  strobe = false;
+  index1 = 0;
+  index2 = 0;
+  write(value) {
+    this.strobe = (value & 1) !== 0;
+    if (this.strobe) {
+      this.index1 = 0;
+      this.index2 = 0;
+    }
+  }
+  read1() {
+    return this.shift(1);
+  }
+  read2() {
+    return this.shift(2);
+  }
+  shift(player) {
+    const buttons = player === 1 ? this.buttons1 : this.buttons2;
+    if (this.strobe) {
+      return buttons & 1;
+    }
+    const index = player === 1 ? this.index1 : this.index2;
+    const bit = index < 8 ? buttons >> index & 1 : 1;
+    if (player === 1) this.index1++;
+    else this.index2++;
+    return bit;
+  }
+};
+
 // src/nes.ts
 var Nes = class {
   cart;
@@ -1273,13 +1308,16 @@ var Nes = class {
   bus;
   cpu;
   ppu;
+  controller;
   constructor(romData) {
     this.cart = new Cartridge(romData);
     this.mapper = this.cart.createMapper();
     this.bus = new Bus(this.mapper);
     this.cpu = new Cpu(this.bus);
     this.ppu = new Ppu(this.mapper);
+    this.controller = new StandardController();
     this.bus.ppu = this.ppu;
+    this.bus.controller = this.controller;
     this.ppu.onNmi = () => this.cpu.requestNmi();
     this.bus.onOamDma = () => {
       this.cpu.stall += 513 + (this.cpu.cycles & 1);
@@ -1316,6 +1354,17 @@ var Nes = class {
 };
 
 // src/main.ts
+var KEYMAP = {
+  KeyX: 1 /* A */,
+  KeyZ: 2 /* B */,
+  ShiftLeft: 4 /* Select */,
+  ShiftRight: 4 /* Select */,
+  Enter: 8 /* Start */,
+  ArrowUp: 16 /* Up */,
+  ArrowDown: 32 /* Down */,
+  ArrowLeft: 64 /* Left */,
+  ArrowRight: 128 /* Right */
+};
 var canvas = document.getElementById("screen");
 var ctx = canvas.getContext("2d");
 var statusEl = document.getElementById("status");
@@ -1363,6 +1412,35 @@ romInput.addEventListener("change", async () => {
     setRunning(false);
     statusEl.textContent = `\u8AAD\u307F\u8FBC\u307F\u5931\u6557: ${e instanceof Error ? e.message : e}`;
   }
+});
+window.addEventListener("keydown", (e) => {
+  const btn = KEYMAP[e.code];
+  if (btn && nes) {
+    nes.controller.buttons1 |= btn;
+    e.preventDefault();
+  }
+});
+window.addEventListener("keyup", (e) => {
+  const btn = KEYMAP[e.code];
+  if (btn && nes) {
+    nes.controller.buttons1 &= ~btn;
+    e.preventDefault();
+  }
+});
+async function loadBundledGame() {
+  try {
+    const res = await fetch("mosshop.nes");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = new Uint8Array(await res.arrayBuffer());
+    nes = new Nes(data);
+    statusEl.textContent = "\u540C\u68B1\u30B2\u30FC\u30E0\u300EMOSS HOP\u300F\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\u3002Enter \u3067\u30B9\u30BF\u30FC\u30C8!";
+    setRunning(true);
+  } catch (e) {
+    statusEl.textContent = `\u540C\u68B1\u30B2\u30FC\u30E0\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557: ${e instanceof Error ? e.message : e}`;
+  }
+}
+document.getElementById("btn-sample")?.addEventListener("click", () => {
+  void loadBundledGame();
 });
 btnRun.addEventListener("click", () => setRunning(true));
 btnPause.addEventListener("click", () => setRunning(false));

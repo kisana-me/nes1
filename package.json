@@ -9,6 +9,7 @@
     "watch": "esbuild src/main.ts --bundle --format=esm --outfile=docs/app.js --watch",
     "serve": "esbuild src/main.ts --bundle --format=esm --outfile=docs/app.js --servedir=docs",
     "typecheck": "tsc --noEmit",
+    "build:game": "node scripts/build-game.mjs",
     "test": "node scripts/run-tests.mjs"
   },
   "repository": {

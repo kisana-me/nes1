@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第4章 コントローラーとオリジナルゲーム — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第4章</h1>
+  <div class="subtitle">入力・コントローラー対応 + オリジナルゲーム『MOSS HOP』</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+2 つの大きな成果があります。1 つ目はコントローラー入力の実装。
+2 つ目は、エミュレータの動作確認用に<strong>完全オリジナルの 2D プラットフォーマーゲーム
+『MOSS HOP』を NES ROM としてゼロから作り、実際にエミュレータで動かす</strong>ことです。
+</p>
+<p>実装したファイル:</p>
+<ul>
+  <li><code>src/controller.ts</code> — 標準コントローラー(シフトレジスタ)</li>
+  <li><code>tools/asm.ts</code> — TypeScript 製ミニ 6502 アセンブラ</li>
+  <li><code>game/chr.ts</code> — オリジナルのドット絵(キャラ・地形・フォント)</li>
+  <li><code>game/build-game.ts</code> — ゲーム本体(6502 アセンブリ)</li>
+  <li><code>tests/game.test.ts</code> — ゲームを自動プレイする統合テスト</li>
+</ul>
+
+<h2>コントローラーの仕組み — たった 1 本の線で 8 ボタン</h2>
+<p>
+ファミコンのコントローラーには 8 個のボタンがありますが、本体との接続線でデータ用は実質 1 本。
+どうやって 8 ボタン分を送るのでしょう?答えは<strong>シフトレジスタ</strong>(4021 相当のチップ)です。
+</p>
+<pre><code>CPU 側の手順:
+1. $4016 に 1 を書く → コントローラーが全ボタン状態を「撮影」(ラッチ)
+2. $4016 に 0 を書く → 読み出しモードへ
+3. $4016 を 8 回読む → A, B, Select, Start, ↑, ↓, ←, → の順に
+                        1 ビットずつ出てくる</code></pre>
+<p>ゲーム側(6502 アセンブリ)の読み取りルーチンはこうなります:</p>
+<pre><code>readPad:
+  LDA pad
+  STA padPrev   ; 前フレームの状態を保存 (押した瞬間の検出用)
+  LDA #1
+  STA $4016     ; ストローブ ON
+  LDA #0
+  STA $4016     ; ストローブ OFF
+  LDX #8
+loop:
+  LDA $4016     ; 1 ビット読む
+  LSR A         ; bit0 をキャリーへ
+  ROL pad       ; キャリーを pad へ流し込む
+  DEX
+  BNE loop
+  RTS</code></pre>
+<p>
+8 回まわすと <code>pad</code> 変数の bit7 が A、bit0 が右…と全ボタンが 1 バイトに揃います。
+エミュレータ側 (<code>src/controller.ts</code>) はこのシフトレジスタの動きをそのまま再現し、
+ブラウザの <code>keydown/keyup</code> イベントでボタン状態を更新します。
+</p>
+<div class="note">
+「押した瞬間」の検出は <code>pad AND NOT padPrev</code> です。ジャンプや START の反応を
+1 回だけにするための定番テクニックで、現代のゲーム開発でも同じ考え方を使います。
+</div>
+
+<h2>オリジナルゲーム『MOSS HOP』</h2>
+<p>
+苔玉の妖精「モス」が森の遺跡で胞子を集めるプラットフォーマーです。
+キャラクター・世界観・ドット絵・コード、すべて本プロジェクトのための描き下ろし・書き下ろしで、
+既存の商用ゲームの要素は一切使っていません。
+</p>
+<table>
+  <tr><th>項目</th><th>内容</th></tr>
+  <tr><td>操作</td><td>←→ 移動 / A ボタン(キーボード X)ジャンプ / START(Enter)開始</td></tr>
+  <tr><td>ルール</td><td>各レベルの胞子を 3 つ集めると次のレベルへ。全 2 レベルで CLEAR!</td></tr>
+  <tr><td>形式</td><td>iNES / NROM(マッパー 0)、PRG 16KB + CHR 8KB</td></tr>
+</table>
+
+<h3>TypeScript で書くアセンブラ</h3>
+<p>
+NES のゲームは 6502 の機械語です。普通は cc65 などのアセンブラを使いますが、
+学習目的なので<strong>アセンブラ自体も TypeScript で自作</strong>しました(<code>tools/asm.ts</code>)。
+テキストをパースする代わりに、メソッド呼び出しで機械語を組み立てる EDSL 方式です:
+</p>
+<pre><code>const a = new Asm(0xc000);
+a.label("reset");
+a.sei();              // → $78
+a.ldaImm(0x1e);       // → $A9 $1E
+a.staAbs(0x2001);     // → $8D $01 $20
+a.jmp("mainLoop");    // ラベルは 2 パスで解決
+const bin = a.assemble();</code></pre>
+<p>
+ラベルの位置を先に記録しておき、<code>assemble()</code> で分岐先アドレスを埋める
+「2 パス方式」は、本物のアセンブラと同じ仕組みです。
+</p>
+
+<h3>ゲームの構造 — NMI 駆動のゲームループ</h3>
+<pre><code>reset:                     NMI (毎フレーム VBlank):
+  ハードウェア初期化           OAM DMA (スプライト転送)
+  RAM クリア                 スクロール再設定
+  パレット・タイトル画面描画     nmiFlag = 1
+mainLoop:
+  nmiFlag が立つまで待つ ◄────┘
+  コントローラー読み取り
+  状態に応じて分岐:
+    タイトル → START でゲーム開始
+    プレイ中 → 移動・物理・当たり判定・スプライト構築
+    クリア   → CLEAR! 表示、START でタイトルへ
+  jmp mainLoop</code></pre>
+<p>
+VRAM を触ってよいのは VBlank 中だけなので、ゲームロジックはメインループで実行し、
+PPU への転送(スプライト DMA)は NMI ハンドラで行う——これが NES ゲームの標準形です。
+</p>
+
+<h3>物理演算 — 固定小数点の重力</h3>
+<p>
+6502 には小数がありません。そこで Y 座標と速度を <strong>8.8 固定小数点</strong>
+(上位バイト=ピクセル、下位バイト=1/256 ピクセル)で持ちます:
+</p>
+<pre><code>; 毎フレーム: 速度 += 重力 (0.25px/f²)、位置 += 速度
+LDA velYLo : CLC : ADC #$40 : STA velYLo   ; 下位バイトに加算
+LDA velYHi : ADC #0        : STA velYHi    ; 繰り上がり
+LDA playerYlo : CLC : ADC velYLo : STA playerYlo
+LDA playerY   : ADC velYHi       : STA playerY  ; 符号付きでも動く!</code></pre>
+<p>
+ジャンプは速度に <code>-4.5px/f</code>($FB80)をセットするだけ。あとは重力が放物線を描いてくれます。
+2 の補数表現のおかげで、負の速度も同じ加算コードで処理できるのが 6502 の美しいところです。
+</p>
+
+<h3>当たり判定 — マップはメタタイル</h3>
+<p>
+レベルは 16×15 の<strong>メタタイル</strong>(16×16 ピクセルのブロック)で表現します。
+座標をタイル座標に変換するのは 4 回の右シフトだけ:
+</p>
+<pre><code>; 足元 (x+2, y+16) が地面か?
+LDA playerY : CLC : ADC #16
+LSR : LSR : LSR : LSR      ; /16 → タイル Y
+STA tileY
+...
+; マップ配列 index = tileY*16 + tileX
+LDA tileY : ASL:ASL:ASL:ASL : CLC : ADC tileX : TAY
+LDA (mapPtr),Y             ; 0 なら空、それ以外は壁/床</code></pre>
+<p>
+落下中は足元 2 点、上昇中は頭上 2 点、左右移動時は側面 2 点をチェックし、
+めり込んだらタイル境界へ「スナップ」します。プラットフォーマーの基本アルゴリズムです。
+</p>
+
+<h3>グラフィックも TypeScript で</h3>
+<p>
+ドット絵は文字列で描き、ビルド時に 2 ビットプレーン形式へ変換します(<code>game/chr.ts</code>):
+</p>
+<pre><code>const sporeArt = [
+  "...11...",
+  "..1331..",
+  ".133331.",
+  "13333331",
+  ...
+];  // '.'=透明 '1'-'3'=パレット色</code></pre>
+
+<h2>エミュレータでゲームを検証する</h2>
+<p>
+<code>tests/game.test.ts</code> は、エミュレータ上で ROM を起動し<strong>自動プレイ</strong>で検証します:
+</p>
+<ol>
+  <li>起動 → タイトル文字がネームテーブルに書かれている</li>
+  <li>START 押下 → ゲーム状態がプレイ中になり、プレイヤーが出現</li>
+  <li>60 フレーム待つ → 重力で落下して地面に着地(<code>onGround=1</code>)</li>
+  <li>→ を 30 フレーム → X 座標が進む。← で戻る</li>
+  <li>A 押下 → 16px 以上上昇し、着地すると元の高さに戻る</li>
+  <li>右へ歩き+ジャンプの自動プレイ → 胞子を 1 つ以上収集できる</li>
+</ol>
+<p>
+エミュレータ(CPU/PPU/入力)とゲーム(物理/判定)の両方を一度に検証する統合テストです。
+</p>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li><code>npm run build:game</code> — <code>docs/mosshop.nes</code> が生成される(24,592 バイト)</li>
+  <li><code>npm test</code> — ゲームの自動プレイテスト含め全件 pass</li>
+  <li><code>npm run serve</code> でブラウザを開き、
+    「🌿 同梱ゲーム『MOSS HOP』をプレイ」ボタンを押す</li>
+  <li>タイトルで Enter → ←→ で移動、X でジャンプ。胞子を 3 つ集めるとレベル 2 へ。
+    レベル 2 の中央の奈落に落ちるとリスポーンする</li>
+</ol>
+</div>
+
+<div class="pager">
+  <a href="03-ppu.html">← 第3章 PPU(グラフィック)</a>
+  <a href="05-apu.html">第5章 APU(音声)→</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>
