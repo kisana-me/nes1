@@ -50,10 +50,52 @@ function drawFrame(): void {
   ctx.putImageData(imageData, 0, 0);
 }
 
-function loop(): void {
+// ---- デバッグ UI ----
+import { DebugView } from "./debug";
+const debugView = new DebugView({
+  pattern: document.getElementById("dbg-pattern") as HTMLCanvasElement,
+  nametable: document.getElementById("dbg-nametable") as HTMLCanvasElement,
+  palette: document.getElementById("dbg-palette") as HTMLCanvasElement,
+  cpuState: document.getElementById("cpu-state")!,
+  trace: document.getElementById("cpu-trace")!,
+});
+let debugVisible = false;
+
+// ---- タイミング ----
+// ディスプレイのリフレッシュレート (60/120/144Hz...) に依存しないよう、
+// 経過時間を積算して NTSC の 60.0988fps 分だけフレームを実行する
+const FRAME_MS = 1000 / 60.0988;
+let lastTime = 0;
+let accumulator = 0;
+let fps = 0;
+let fpsCounter = 0;
+let fpsTime = 0;
+
+function loop(now: number): void {
   if (!nes || !running) return;
-  nes.runFrame();
-  drawFrame();
+  if (lastTime === 0) lastTime = now;
+  accumulator += now - lastTime;
+  lastTime = now;
+  // 遅延が溜まりすぎたら捨てる (タブ復帰時の暴走防止)
+  if (accumulator > FRAME_MS * 4) accumulator = FRAME_MS * 4;
+  let ran = false;
+  while (accumulator >= FRAME_MS) {
+    nes.runFrame();
+    accumulator -= FRAME_MS;
+    fpsCounter++;
+    ran = true;
+  }
+  if (ran) drawFrame();
+  // FPS 計測
+  if (now - fpsTime >= 1000) {
+    fps = (fpsCounter * 1000) / (now - fpsTime);
+    fpsCounter = 0;
+    fpsTime = now;
+  }
+  if (debugVisible) {
+    debugView.updateFast(nes, fps);
+    if (nes.ppu.frame % 15 === 0) debugView.updateHeavy(nes);
+  }
   rafId = requestAnimationFrame(loop);
 }
 
@@ -62,6 +104,8 @@ function setRunning(r: boolean): void {
   btnRun.disabled = !nes || r;
   btnPause.disabled = !nes || !r;
   btnReset.disabled = !nes;
+  lastTime = 0;
+  accumulator = 0;
   if (r) {
     rafId = requestAnimationFrame(loop);
   } else {
@@ -76,6 +120,7 @@ romInput.addEventListener("change", async () => {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes!);
     statusEl.textContent =
       `${file.name} を読み込みました (PRG ${nes.cart.prgRom.length / 1024}KB, ` +
       `CHR ${nes.cart.chrRom.length / 1024}KB, マッパー ${nes.cart.mapperId})`;
@@ -110,6 +155,7 @@ async function loadBundledGame(): Promise<void> {
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes!);
     statusEl.textContent = "同梱ゲーム『MOSS HOP』を読み込みました。Enter でスタート!";
     setRunning(true);
   } catch (e) {
@@ -118,6 +164,36 @@ async function loadBundledGame(): Promise<void> {
 }
 document.getElementById("btn-sample")?.addEventListener("click", () => {
   void loadBundledGame();
+});
+
+// ---- デバッグ UI の操作 ----
+document.getElementById("btn-debug")?.addEventListener("click", () => {
+  debugVisible = !debugVisible;
+  const panel = document.getElementById("debug-panel")!;
+  panel.style.display = debugVisible ? "flex" : "none";
+  if (debugVisible && nes) {
+    debugView.updateFast(nes, fps);
+    debugView.updateHeavy(nes);
+  }
+});
+
+document.getElementById("btn-step")?.addEventListener("click", () => {
+  if (!nes) return;
+  setRunning(false);
+  nes.runFrame();
+  drawFrame();
+  if (debugVisible) {
+    debugView.updateFast(nes, 0);
+    debugView.updateHeavy(nes);
+  }
+});
+
+document.getElementById("chk-trace")?.addEventListener("change", (e) => {
+  const enabled = (e.target as HTMLInputElement).checked;
+  debugView.traceEnabled = enabled;
+  if (nes) {
+    nes.beforeStep = enabled ? () => debugView.onStep(nes!) : null;
+  }
 });
 
 document.getElementById("btn-mute")?.addEventListener("click", (e) => {

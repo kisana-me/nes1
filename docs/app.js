@@ -154,6 +154,26 @@ def(248, "SED", 0 /* IMP */, 2);
 def(0, "BRK", 0 /* IMP */, 7);
 def(64, "RTI", 0 /* IMP */, 6);
 def(234, "NOP", 0 /* IMP */, 2);
+function opcodeInfo(opcode) {
+  const op = OPTABLE[opcode];
+  if (!op) return { name: "???", bytes: 1 };
+  let bytes;
+  switch (op.mode) {
+    case 0 /* IMP */:
+    case 1 /* ACC */:
+      bytes = 1;
+      break;
+    case 6 /* ABS */:
+    case 7 /* ABX */:
+    case 8 /* ABY */:
+    case 9 /* IND */:
+      bytes = 3;
+      break;
+    default:
+      bytes = 2;
+  }
+  return { name: op.name, bytes };
+}
 var Cpu = class {
   constructor(bus) {
     this.bus = bus;
@@ -1230,7 +1250,11 @@ var Ppu = class {
   // 0-261
   dot = 0;
   // 0-340
-  nmiOccurred = false;
+  // ライン描画用ワークバッファ (毎ライン new しない — GC 回避の最適化)
+  bgPix = new Uint8Array(256);
+  sprPix = new Uint8Array(256);
+  sprBehind = new Uint8Array(256);
+  sprIsZero = new Uint8Array(256);
   /** VBlank 開始時に CPU へ NMI を届けるコールバック */
   onNmi = null;
   reset() {
@@ -1446,7 +1470,8 @@ var Ppu = class {
     const sprEnabled = (this.mask & 16) !== 0;
     const bgLeftShow = (this.mask & 2) !== 0;
     const sprLeftShow = (this.mask & 4) !== 0;
-    const bgPix = new Uint8Array(256);
+    const bgPix = this.bgPix;
+    bgPix.fill(0);
     if (bgEnabled) {
       let rv = this.v;
       const fineY = rv >> 12 & 7;
@@ -1475,9 +1500,12 @@ var Ppu = class {
     if (bgEnabled && !bgLeftShow) {
       for (let i = 0; i < 8; i++) bgPix[i] = 0;
     }
-    const sprPix = new Uint8Array(256);
-    const sprBehind = new Uint8Array(256);
-    const sprIsZero = new Uint8Array(256);
+    const sprPix = this.sprPix;
+    const sprBehind = this.sprBehind;
+    const sprIsZero = this.sprIsZero;
+    sprPix.fill(0);
+    sprBehind.fill(0);
+    sprIsZero.fill(0);
     if (sprEnabled) {
       const sprHeight = this.ctrl & 32 ? 16 : 8;
       let count = 0;
@@ -2187,8 +2215,11 @@ var Nes = class {
       this.step();
     }
   }
+  /** デバッグ用: 各命令の実行直前に呼ばれるフック */
+  beforeStep = null;
   /** CPU 1 命令 (+付随する PPU の進行) を実行 */
   step() {
+    this.beforeStep?.();
     const cpuCycles = this.cpu.step();
     for (let i = 0; i < cpuCycles * 3; i++) {
       this.ppu.tick();
@@ -2249,6 +2280,147 @@ var AudioOutput = class {
   }
 };
 
+// src/debug.ts
+var hex = (v, w) => v.toString(16).toUpperCase().padStart(w, "0");
+var DebugView = class {
+  patternCtx;
+  nametableCtx;
+  paletteCtx;
+  cpuStateEl;
+  traceEl;
+  traceEnabled = false;
+  traceLines = [];
+  constructor(root) {
+    this.patternCtx = root.pattern.getContext("2d");
+    this.nametableCtx = root.nametable.getContext("2d");
+    this.paletteCtx = root.palette.getContext("2d");
+    this.cpuStateEl = root.cpuState;
+    this.traceEl = root.trace;
+  }
+  /** 1 命令実行されるたびに呼ばれる (トレース有効時のみ記録) */
+  onStep(nes2) {
+    if (!this.traceEnabled) return;
+    const pc = nes2.cpu.pc;
+    const opcode = nes2.bus.read(pc);
+    const info = opcodeInfo(opcode);
+    let operand = "";
+    if (info.bytes === 2) operand = `$${hex(nes2.bus.read(pc + 1), 2)}`;
+    if (info.bytes === 3) {
+      operand = `$${hex(nes2.bus.read(pc + 2), 2)}${hex(nes2.bus.read(pc + 1), 2)}`;
+    }
+    this.traceLines.push(
+      `${hex(pc, 4)}  ${info.name} ${operand.padEnd(5)}  A:${hex(nes2.cpu.a, 2)} X:${hex(nes2.cpu.x, 2)} Y:${hex(nes2.cpu.y, 2)} P:${hex(nes2.cpu.getP(false), 2)}`
+    );
+    if (this.traceLines.length > 64) this.traceLines.shift();
+  }
+  /** フレームごとの更新 (軽量な部分) */
+  updateFast(nes2, fps2) {
+    const c = nes2.cpu;
+    this.cpuStateEl.textContent = `FPS ${fps2.toFixed(1)}  FRAME ${nes2.ppu.frame}
+PC:$${hex(c.pc, 4)}  A:$${hex(c.a, 2)}  X:$${hex(c.x, 2)}  Y:$${hex(c.y, 2)}
+SP:$${hex(c.sp, 2)}  P:$${hex(c.getP(false), 2)} [${c.n ? "N" : "."}${c.v ? "V" : "."}..${c.d ? "D" : "."}${c.i ? "I" : "."}${c.z ? "Z" : "."}${c.c ? "C" : "."}]
+CYC:${c.cycles}  SL:${nes2.ppu.scanline}  DOT:${nes2.ppu.dot}
+CTRL:$${hex(nes2.ppu.control, 2)}  MASK:$${hex(nes2.ppu.maskReg, 2)}  STAT:$${hex(nes2.ppu.status, 2)}  V:$${hex(nes2.ppu.vramAddr, 4)}`;
+    if (this.traceEnabled) {
+      this.traceEl.textContent = this.traceLines.join("\n");
+      this.traceEl.scrollTop = this.traceEl.scrollHeight;
+    }
+  }
+  /** 重い可視化 (呼び出し側で間引く) */
+  updateHeavy(nes2) {
+    this.drawPatternTables(nes2);
+    this.drawNametables(nes2);
+    this.drawPalettes(nes2);
+  }
+  /** パターンテーブル 2 面を 256x128 に描く (グレースケール) */
+  drawPatternTables(nes2) {
+    const img = this.patternCtx.createImageData(256, 128);
+    const px = new Uint32Array(img.data.buffer);
+    const GRAYS = [4278190080, 4283782485, 4289374890, 4294967295];
+    for (let table = 0; table < 2; table++) {
+      for (let tile = 0; tile < 256; tile++) {
+        const tx = (tile & 15) * 8 + table * 128;
+        const ty = (tile >> 4) * 8;
+        const base = table * 4096 + tile * 16;
+        for (let y = 0; y < 8; y++) {
+          const lo = nes2.mapper.ppuRead(base + y);
+          const hi = nes2.mapper.ppuRead(base + y + 8);
+          for (let x = 0; x < 8; x++) {
+            const bit = 7 - x;
+            const color = (hi >> bit & 1) << 1 | lo >> bit & 1;
+            px[(ty + y) * 256 + tx + x] = GRAYS[color];
+          }
+        }
+      }
+    }
+    this.patternCtx.putImageData(img, 0, 0);
+  }
+  /** ネームテーブル 4 面を 512x480 に描く */
+  drawNametables(nes2) {
+    const img = this.nametableCtx.createImageData(512, 480);
+    const px = new Uint32Array(img.data.buffer);
+    const ppu = nes2.ppu;
+    const patternBase = ppu.control & 16 ? 4096 : 0;
+    const backdrop = ppu.palette[0] & 63;
+    for (let nt = 0; nt < 4; nt++) {
+      const originX = (nt & 1) * 256;
+      const originY = (nt >> 1) * 240;
+      const vramBase = this.mirrorNametable(nes2, nt) * 1024;
+      for (let row = 0; row < 30; row++) {
+        for (let col = 0; col < 32; col++) {
+          const tile = ppu.vram[vramBase + row * 32 + col];
+          const attr = ppu.vram[vramBase + 960 + (row >> 2) * 8 + (col >> 2)];
+          const shift = (row & 2) << 1 | col & 2;
+          const palHi = (attr >> shift & 3) << 2;
+          const base = patternBase + tile * 16;
+          for (let y = 0; y < 8; y++) {
+            const lo = nes2.mapper.ppuRead(base + y);
+            const hi = nes2.mapper.ppuRead(base + y + 8);
+            for (let x = 0; x < 8; x++) {
+              const bit = 7 - x;
+              const color = (hi >> bit & 1) << 1 | lo >> bit & 1;
+              const palIndex = color === 0 ? backdrop : ppu.palette[palHi | color] & 63;
+              px[(originY + row * 8 + y) * 512 + originX + col * 8 + x] = NES_PALETTE[palIndex];
+            }
+          }
+        }
+      }
+    }
+    this.nametableCtx.putImageData(img, 0, 0);
+  }
+  /** 論理ネームテーブル番号 → 物理 VRAM ページ (0/1) */
+  mirrorNametable(nes2, nt) {
+    switch (nes2.mapper.mirroring()) {
+      case 1 /* Vertical */:
+        return nt & 1;
+      case 0 /* Horizontal */:
+        return nt >> 1;
+      case 3 /* SingleScreenLower */:
+        return 0;
+      case 4 /* SingleScreenUpper */:
+        return 1;
+      default:
+        return nt & 1;
+    }
+  }
+  /** パレット 32 色を描く */
+  drawPalettes(nes2) {
+    const img = this.paletteCtx.createImageData(256, 32);
+    const px = new Uint32Array(img.data.buffer);
+    for (let i = 0; i < 32; i++) {
+      const color = NES_PALETTE[nes2.ppu.palette[i] & 63];
+      const ox = (i & 15) * 16;
+      const oy = i < 16 ? 0 : 16;
+      for (let y = 0; y < 16; y++) {
+        for (let x = 0; x < 16; x++) {
+          px[(oy + y) * 256 + ox + x] = color;
+        }
+      }
+    }
+    this.paletteCtx.putImageData(img, 0, 0);
+  }
+};
+
 // src/main.ts
 var audio = new AudioOutput();
 function attachAudio(n) {
@@ -2284,10 +2456,43 @@ function drawFrame() {
   imagePixels.set(nes.frameBuffer);
   ctx.putImageData(imageData, 0, 0);
 }
-function loop() {
+var debugView = new DebugView({
+  pattern: document.getElementById("dbg-pattern"),
+  nametable: document.getElementById("dbg-nametable"),
+  palette: document.getElementById("dbg-palette"),
+  cpuState: document.getElementById("cpu-state"),
+  trace: document.getElementById("cpu-trace")
+});
+var debugVisible = false;
+var FRAME_MS = 1e3 / 60.0988;
+var lastTime = 0;
+var accumulator = 0;
+var fps = 0;
+var fpsCounter = 0;
+var fpsTime = 0;
+function loop(now) {
   if (!nes || !running) return;
-  nes.runFrame();
-  drawFrame();
+  if (lastTime === 0) lastTime = now;
+  accumulator += now - lastTime;
+  lastTime = now;
+  if (accumulator > FRAME_MS * 4) accumulator = FRAME_MS * 4;
+  let ran = false;
+  while (accumulator >= FRAME_MS) {
+    nes.runFrame();
+    accumulator -= FRAME_MS;
+    fpsCounter++;
+    ran = true;
+  }
+  if (ran) drawFrame();
+  if (now - fpsTime >= 1e3) {
+    fps = fpsCounter * 1e3 / (now - fpsTime);
+    fpsCounter = 0;
+    fpsTime = now;
+  }
+  if (debugVisible) {
+    debugView.updateFast(nes, fps);
+    if (nes.ppu.frame % 15 === 0) debugView.updateHeavy(nes);
+  }
   rafId = requestAnimationFrame(loop);
 }
 function setRunning(r) {
@@ -2295,6 +2500,8 @@ function setRunning(r) {
   btnRun.disabled = !nes || r;
   btnPause.disabled = !nes || !r;
   btnReset.disabled = !nes;
+  lastTime = 0;
+  accumulator = 0;
   if (r) {
     rafId = requestAnimationFrame(loop);
   } else {
@@ -2308,6 +2515,7 @@ romInput.addEventListener("change", async () => {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes);
     statusEl.textContent = `${file.name} \u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F (PRG ${nes.cart.prgRom.length / 1024}KB, CHR ${nes.cart.chrRom.length / 1024}KB, \u30DE\u30C3\u30D1\u30FC ${nes.cart.mapperId})`;
     setRunning(true);
   } catch (e) {
@@ -2337,6 +2545,7 @@ async function loadBundledGame() {
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes);
     statusEl.textContent = "\u540C\u68B1\u30B2\u30FC\u30E0\u300EMOSS HOP\u300F\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\u3002Enter \u3067\u30B9\u30BF\u30FC\u30C8!";
     setRunning(true);
   } catch (e) {
@@ -2345,6 +2554,32 @@ async function loadBundledGame() {
 }
 document.getElementById("btn-sample")?.addEventListener("click", () => {
   void loadBundledGame();
+});
+document.getElementById("btn-debug")?.addEventListener("click", () => {
+  debugVisible = !debugVisible;
+  const panel = document.getElementById("debug-panel");
+  panel.style.display = debugVisible ? "flex" : "none";
+  if (debugVisible && nes) {
+    debugView.updateFast(nes, fps);
+    debugView.updateHeavy(nes);
+  }
+});
+document.getElementById("btn-step")?.addEventListener("click", () => {
+  if (!nes) return;
+  setRunning(false);
+  nes.runFrame();
+  drawFrame();
+  if (debugVisible) {
+    debugView.updateFast(nes, 0);
+    debugView.updateHeavy(nes);
+  }
+});
+document.getElementById("chk-trace")?.addEventListener("change", (e) => {
+  const enabled = e.target.checked;
+  debugView.traceEnabled = enabled;
+  if (nes) {
+    nes.beforeStep = enabled ? () => debugView.onStep(nes) : null;
+  }
 });
 document.getElementById("btn-mute")?.addEventListener("click", (e) => {
   audio.muted = !audio.muted;

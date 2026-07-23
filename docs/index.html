@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>nes1 — TypeScript製 NES エミュレータ</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -31,6 +32,11 @@
       <button id="btn-reset" class="secondary" disabled>⟳ リセット</button>
       <button id="btn-mute" class="secondary">🔊 音声 ON</button>
     </p>
+    <p>
+      <button id="btn-debug" class="secondary">🔍 デバッグ表示</button>
+      <button id="btn-step" class="secondary">⏭ 1フレーム進める</button>
+      <label style="font-size:0.85rem"><input type="checkbox" id="chk-trace"> CPU トレース</label>
+    </p>
     <table>
       <tr><th>NES</th><th>キー</th></tr>
       <tr><td>十字キー</td><td><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></td></tr>
@@ -50,13 +56,32 @@
         <li><a href="chapters/04-controller.html">入力・コントローラー対応 + オリジナルゲーム</a></li>
         <li><a href="chapters/05-apu.html">APU(音声)実装</a></li>
         <li><a href="chapters/06-mappers.html">ROM ローダーとマッパー対応拡張</a></li>
-        <li>デバッグ UI・パフォーマンス最適化 <small>(準備中)</small></li>
+        <li><a href="chapters/07-debug.html">デバッグ UI・パフォーマンス最適化</a></li>
       </ol>
     </nav>
     <p style="color:var(--sub);font-size:0.85rem">
       各章は「実装 → ブランチ作成 → push → 解説追加」のサイクルで進めています。
       ソースコードは <a href="https://github.com/kisana-me/nes1">GitHub</a> にあります。
     </p>
+  </div>
+</div>
+
+<div id="debug-panel" class="debug-grid" style="display:none">
+  <div class="debug-box">
+    <h3>CPU / PPU 状態</h3>
+    <pre id="cpu-state" style="margin:0;border:none;padding:0.3rem"></pre>
+    <h3>実行トレース</h3>
+    <div id="cpu-trace">(「CPU トレース」を ON にすると表示)</div>
+  </div>
+  <div class="debug-box">
+    <h3>パターンテーブル (BG用 / スプライト用)</h3>
+    <canvas id="dbg-pattern" width="256" height="128" style="width:512px;max-width:100%"></canvas>
+    <h3>パレット (上: BG / 下: スプライト)</h3>
+    <canvas id="dbg-palette" width="256" height="32" style="width:512px;max-width:100%"></canvas>
+  </div>
+  <div class="debug-box">
+    <h3>ネームテーブル (4画面 + ミラーリング)</h3>
+    <canvas id="dbg-nametable" width="512" height="480" style="width:512px;max-width:100%"></canvas>
   </div>
 </div>
 

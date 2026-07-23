@@ -72,7 +72,12 @@ export class Ppu {
   // ---- タイミング ----
   scanline = 0; // 0-261
   dot = 0;      // 0-340
-  private nmiOccurred = false;
+
+  // ライン描画用ワークバッファ (毎ライン new しない — GC 回避の最適化)
+  private bgPix = new Uint8Array(256);
+  private sprPix = new Uint8Array(256);
+  private sprBehind = new Uint8Array(256);
+  private sprIsZero = new Uint8Array(256);
 
   /** VBlank 開始時に CPU へ NMI を届けるコールバック */
   onNmi: (() => void) | null = null;
@@ -328,8 +333,9 @@ export class Ppu {
     const sprLeftShow = (this.mask & 0x04) !== 0;
 
     // ---- 背景 ----
-    // line[i] にはパレット RAM のインデックス (0-31)、0 なら透明背景
-    const bgPix = new Uint8Array(256);
+    // bgPix[i] にはパレット RAM のインデックス (0-31)、0 なら透明背景
+    const bgPix = this.bgPix;
+    bgPix.fill(0);
     if (bgEnabled) {
       // v のローカルコピーでタイルを 33 枚フェッチ (fineX のずれ分で +1 枚)
       let rv = this.v;
@@ -365,10 +371,13 @@ export class Ppu {
     }
 
     // ---- スプライト ----
-    // sprPix: パレットインデックス, sprPriority: 1=背景の後ろ, sprIsZero: スプライト0か
-    const sprPix = new Uint8Array(256);
-    const sprBehind = new Uint8Array(256);
-    const sprIsZero = new Uint8Array(256);
+    // sprPix: パレットインデックス, sprBehind: 1=背景の後ろ, sprIsZero: スプライト0か
+    const sprPix = this.sprPix;
+    const sprBehind = this.sprBehind;
+    const sprIsZero = this.sprIsZero;
+    sprPix.fill(0);
+    sprBehind.fill(0);
+    sprIsZero.fill(0);
     if (sprEnabled) {
       const sprHeight = (this.ctrl & 0x20) ? 16 : 8;
       let count = 0;

@@ -55,8 +55,12 @@ export class Nes {
     }
   }
 
+  /** デバッグ用: 各命令の実行直前に呼ばれるフック */
+  beforeStep: (() => void) | null = null;
+
   /** CPU 1 命令 (+付随する PPU の進行) を実行 */
   step(): number {
+    this.beforeStep?.();
     const cpuCycles = this.cpu.step();
     for (let i = 0; i < cpuCycles * 3; i++) {
       this.ppu.tick();

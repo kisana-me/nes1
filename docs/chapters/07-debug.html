@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第7章 デバッグ UI・パフォーマンス最適化 — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第7章</h1>
+  <div class="subtitle">デバッグ UI・パフォーマンス最適化・公開</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+最終章です。エミュレータの内部を覗く<strong>デバッグ UI</strong> を作り、
+パフォーマンスを計測・最適化し、GitHub Pages で公開します。
+</p>
+<p>実装したファイル:</p>
+<ul>
+  <li><code>src/debug.ts</code> — パターン/ネームテーブル/パレットビューア、CPU トレース</li>
+  <li><code>src/main.ts</code> — NTSC 正確なタイミングループ、FPS 計測</li>
+  <li><code>.github/workflows/pages.yml</code> — GitHub Pages 自動デプロイ</li>
+</ul>
+
+<h2>デバッガは「目」である</h2>
+<p>
+エミュレータ開発では「画面が真っ黒」「キャラが化ける」といった不具合が日常です。
+原因は CPU・PPU・マッパーのどこにでもあり得るので、
+<strong>各段階の中間状態を見える化</strong>できると切り分けが一気に楽になります。
+</p>
+<table>
+  <tr><th>ビュー</th><th>見えるもの</th><th>これで分かる不具合</th></tr>
+  <tr><td>パターンテーブル</td><td>CHR-ROM のタイル 512 枚(絵の辞書)</td><td>絵が化けている → CHR バンク切替のバグ</td></tr>
+  <tr><td>ネームテーブル</td><td>4 画面分のタイル配置+ミラーリング</td><td>配置が変 → VRAM 書き込み/ミラーのバグ</td></tr>
+  <tr><td>パレット</td><td>現在の 32 色</td><td>色が変 → パレット RAM のバグ</td></tr>
+  <tr><td>CPU 状態</td><td>PC/A/X/Y/SP/フラグ/サイクル</td><td>暴走 → 命令実装のバグ</td></tr>
+  <tr><td>実行トレース</td><td>逆アセンブル付きの実行履歴</td><td>「どこで」おかしくなったか</td></tr>
+</table>
+<p>
+エミュレータの内部データ(<code>ppu.vram</code>、<code>mapper.ppuRead()</code> など)を
+そのまま Canvas に描くだけなので、実装は意外に簡単です。
+「🔍 デバッグ表示」ボタンで開き、重いビューは 15 フレームに 1 回だけ更新して負荷を抑えています。
+</p>
+
+<h3>ミニ逆アセンブラ</h3>
+<p>
+CPU トレースは実行中の命令を <code>C123  LDA $2002  A:00 X:05 ...</code> のように表示します。
+第2章で作ったオペコードテーブルに「この命令は何バイトか」を問い合わせるだけで、
+逆アセンブラのコアは 20 行で書けます(<code>opcodeInfo()</code>)。
+</p>
+
+<h2>タイミング — リフレッシュレート問題</h2>
+<p>
+これまで <code>requestAnimationFrame</code>(rAF)ごとに 1 フレーム実行していましたが、
+これには罠があります。rAF は<strong>ディスプレイのリフレッシュレート</strong>で呼ばれるため、
+120Hz のゲーミングモニタではゲームが 2 倍速になってしまうのです。
+</p>
+<p>解決策は「経過時間の積算」です:</p>
+<pre><code>const FRAME_MS = 1000 / 60.0988;   // NTSC の正確なフレームレート
+accumulator += now - lastTime;
+while (accumulator &gt;= FRAME_MS) {  // 溜まった時間の分だけ実行
+  nes.runFrame();
+  accumulator -= FRAME_MS;
+}</code></pre>
+<p>
+これで 60Hz でも 120Hz でも 144Hz でも正しい速度になります。
+タブがバックグラウンドから復帰したときに溜まった時間で暴走しないよう、
+積算の上限も設けています。
+</p>
+
+<h2>パフォーマンス最適化</h2>
+<p>最適化の鉄則は「<strong>計測してから直す</strong>」。ヘッドレスベンチマークで計測すると:</p>
+<pre><code>600 フレーム実行: 414 fps = 実機の約 6.9 倍速 (Node.js)</code></pre>
+<p>60fps の約 7 倍の余裕があるので大改造は不要ですが、効果の大きい定石を適用しました:</p>
+<ul>
+  <li><strong>ホットループでオブジェクトを作らない</strong> —
+    PPU のライン描画で毎回 <code>new Uint8Array(256)</code> を 4 本作っていたのを、
+    インスタンスフィールドの使い回しに変更(1 フレームで 960 回の GC 対象を削減)</li>
+  <li><strong>型付き配列</strong> — フレームバッファは <code>Uint32Array</code>。
+    1 ピクセル 1 要素で、<code>ImageData</code> のメモリと直接互換</li>
+  <li><strong>画面転送は 1 回</strong> — <code>putImageData</code> を毎フレーム 1 回だけ</li>
+  <li><strong>テーブル駆動 CPU</strong> — 命令デコードは配列参照 1 回</li>
+  <li><strong>デバッグ表示の間引き</strong> — 重いビューは 1/15 頻度、トレースは opt-in</li>
+</ul>
+<div class="note">
+JavaScript エンジン (V8) は同じ型の値が流れる単純なループを強力に最適化します。
+「クラスのフィールドの型を変えない」「ホットパスで例外や動的プロパティを使わない」
+だけで、エミュレータ程度の負荷は余裕で 60fps が出ます。
+</div>
+
+<h2>GitHub Pages で公開</h2>
+<p>
+このプロジェクトは最初から「<code>docs/</code> に全成果物を置く」構成にしてきました。
+解説 HTML も、ビルド済みエミュレータ (<code>app.js</code>) も、
+オリジナルゲームの ROM も全部 <code>docs/</code> にあります。公開方法は 2 通り:
+</p>
+<ol>
+  <li><strong>ブランチから</strong>: リポジトリの Settings → Pages → Source を
+    「Deploy from a branch」にして、ブランチと <code>/docs</code> フォルダを選ぶ</li>
+  <li><strong>GitHub Actions から</strong>: 同梱の <code>.github/workflows/pages.yml</code> が
+    push のたびに <code>docs/</code> をそのままデプロイする
+    (Settings → Pages → Source を「GitHub Actions」にする)</li>
+</ol>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li><code>npm run build &amp;&amp; npm run serve</code> でブラウザを開き、『MOSS HOP』をロード</li>
+  <li>「🔍 デバッグ表示」→ パターンテーブルにモスや文字のタイル、
+    ネームテーブルにレベル地形、パレットにゲームの配色が見えること</li>
+  <li>「CPU トレース」を ON → 逆アセンブル付きの実行履歴が流れること</li>
+  <li>「⏸ 一時停止」→「⏭ 1フレーム進める」でコマ送りできること</li>
+  <li>GitHub Pages 設定後、公開 URL で同じものが動くこと</li>
+</ol>
+</div>
+
+<h2>プロジェクトの振り返り</h2>
+<p>7 章かけて、ブラウザで動く NES エミュレータをゼロから作りました。</p>
+<table>
+  <tr><th>章</th><th>作ったもの</th><th>学んだこと</th></tr>
+  <tr><td>1</td><td>プロジェクト基盤</td><td>NES の全体アーキテクチャ、メモリマップド I/O</td></tr>
+  <tr><td>2</td><td>6502 CPU</td><td>フェッチ/デコード/実行、フラグ、割り込み、2 の補数</td></tr>
+  <tr><td>3</td><td>PPU</td><td>タイルとスプライト、VBlank、スクロールレジスタ</td></tr>
+  <tr><td>4</td><td>コントローラー + 自作ゲーム</td><td>シフトレジスタ、アセンブラ、固定小数点物理</td></tr>
+  <tr><td>5</td><td>APU</td><td>矩形波/三角波/ノイズ、エンベロープ、ミキサー</td></tr>
+  <tr><td>6</td><td>マッパー 4 種</td><td>バンク切り替え、シリアルレジスタ、ラスター IRQ</td></tr>
+  <tr><td>7</td><td>デバッグ UI</td><td>可視化、タイミング制御、計測と最適化</td></tr>
+</table>
+<p>
+テストは合計 108 件。CPU の 1 命令から「ゲームを自動プレイして胞子を取る」統合テストまで、
+全て <code>npm test</code> で数秒で回ります。ここから先は、
+未対応マッパーの追加、サイクル精度の向上、セーブステート、ネットプレイ……
+拡張の方向は無限にあります。よい旅を!
+</p>
+
+<div class="pager">
+  <a href="06-mappers.html">← 第6章 マッパー対応拡張</a>
+  <a href="../index.html">エミュレータで遊ぶ →</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>

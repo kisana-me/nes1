@@ -126,6 +126,28 @@ def(0xd8, "CLD", Mode.IMP, 2); def(0xf8, "SED", Mode.IMP, 2);
 def(0x00, "BRK", Mode.IMP, 7); def(0x40, "RTI", Mode.IMP, 6);
 def(0xea, "NOP", Mode.IMP, 2);
 
+/** デバッグ用: オペコードの情報 (逆アセンブラが使う) */
+export function opcodeInfo(opcode: number): { name: string; bytes: number } {
+  const op = OPTABLE[opcode];
+  if (!op) return { name: "???", bytes: 1 };
+  let bytes: number;
+  switch (op.mode) {
+    case Mode.IMP:
+    case Mode.ACC:
+      bytes = 1;
+      break;
+    case Mode.ABS:
+    case Mode.ABX:
+    case Mode.ABY:
+    case Mode.IND:
+      bytes = 3;
+      break;
+    default:
+      bytes = 2;
+  }
+  return { name: op.name, bytes };
+}
+
 export class Cpu {
   a = 0;
   x = 0;

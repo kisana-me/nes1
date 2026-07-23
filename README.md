@@ -37,8 +37,23 @@ npm run typecheck # 型チェック
 
 ## GitHub Pages
 
-リポジトリ設定で Pages のソースを「ブランチ / `docs` フォルダ」にすると、
-エミュレータ本体と解説サイトがそのまま公開されます。
+公開方法は 2 通り(どちらも Settings → Pages から):
+
+1. **ブランチから**: Source を「Deploy from a branch」にして、公開したいブランチと `/docs` フォルダを選択
+2. **GitHub Actions から**: Source を「GitHub Actions」にすると、同梱の
+   `.github/workflows/pages.yml` が push のたびにテスト → ビルド → デプロイを実行
+
+`docs/` にはビルド済みエミュレータ (`app.js`)、同梱ゲーム ROM (`mosshop.nes`)、
+全章の解説 HTML が含まれており、そのまま静的サイトとして動きます。
+
+## 実装ステータス
+
+- CPU: 全公式命令 151 個、NMI/IRQ、ページ境界バグ再現、サイクルカウント
+- PPU: スキャンライン方式、loopy スクロール、スプライト 0 ヒット、8 枚制限
+- APU: 5 チャンネル、フレームカウンタ、実機準拠ミキサー、Web Audio 出力
+- マッパー: NROM / MMC1 / UxROM / CNROM / MMC3 (スキャンライン IRQ 対応)
+- デバッグ: CPU トレース、パターン/ネームテーブル/パレットビューア、コマ送り
+- テスト: 108 件 (CPU 単体からゲーム自動プレイの統合テストまで)
 
 ## ライセンス・注意
 
