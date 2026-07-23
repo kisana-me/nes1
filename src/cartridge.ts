@@ -11,6 +11,10 @@
 
 import { Mapper } from "./mappers/mapper";
 import { NromMapper } from "./mappers/nrom";
+import { Mmc1Mapper } from "./mappers/mmc1";
+import { UxromMapper } from "./mappers/uxrom";
+import { CnromMapper } from "./mappers/cnrom";
+import { Mmc3Mapper } from "./mappers/mmc3";
 
 export const enum Mirroring {
   Horizontal, // 水平ミラー (縦スクロール向き)
@@ -72,8 +76,18 @@ export class Cartridge {
     switch (this.mapperId) {
       case 0:
         return new NromMapper(this);
+      case 1:
+        return new Mmc1Mapper(this);
+      case 2:
+        return new UxromMapper(this);
+      case 3:
+        return new CnromMapper(this);
+      case 4:
+        return new Mmc3Mapper(this);
       default:
-        throw new Error(`マッパー ${this.mapperId} は未対応です (現在は NROM のみ)`);
+        throw new Error(
+          `マッパー ${this.mapperId} は未対応です (対応: 0=NROM, 1=MMC1, 2=UxROM, 3=CNROM, 4=MMC3)`,
+        );
     }
   }
 }

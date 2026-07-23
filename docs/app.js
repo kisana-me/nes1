@@ -748,8 +748,309 @@ var NromMapper = class {
   }
 };
 
+// src/mappers/mmc1.ts
+var Mmc1Mapper = class {
+  constructor(cart) {
+    this.cart = cart;
+  }
+  cart;
+  shift = 16;
+  // bit4 が 1 の状態が「空」の印
+  control = 12;
+  // 起動時: PRG モード 3 (最終バンク固定)
+  chrBank0 = 0;
+  chrBank1 = 0;
+  prgBank = 0;
+  cpuRead(addr) {
+    if (addr >= 32768) {
+      const prgMode = this.control >> 2 & 3;
+      const bankCount = this.cart.prgRom.length >> 14;
+      let bank;
+      let offset;
+      if (prgMode < 2) {
+        bank = (this.prgBank & 14) % bankCount;
+        offset = addr - 32768;
+        return this.cart.prgRom[bank * 16384 + offset];
+      }
+      if (addr < 49152) {
+        bank = prgMode === 2 ? 0 : this.prgBank % bankCount;
+        offset = addr - 32768;
+      } else {
+        bank = prgMode === 2 ? this.prgBank % bankCount : bankCount - 1;
+        offset = addr - 49152;
+      }
+      return this.cart.prgRom[bank * 16384 + offset];
+    }
+    if (addr >= 24576) {
+      return this.cart.prgRam[addr - 24576];
+    }
+    return 0;
+  }
+  cpuWrite(addr, value) {
+    if (addr < 24576) return;
+    if (addr < 32768) {
+      this.cart.prgRam[addr - 24576] = value;
+      return;
+    }
+    if (value & 128) {
+      this.shift = 16;
+      this.control |= 12;
+      return;
+    }
+    const complete = (this.shift & 1) !== 0;
+    this.shift = this.shift >> 1 | (value & 1) << 4;
+    if (complete) {
+      const reg = addr >> 13 & 3;
+      switch (reg) {
+        case 0:
+          this.control = this.shift;
+          break;
+        case 1:
+          this.chrBank0 = this.shift;
+          break;
+        case 2:
+          this.chrBank1 = this.shift;
+          break;
+        case 3:
+          this.prgBank = this.shift & 15;
+          break;
+      }
+      this.shift = 16;
+    }
+  }
+  chrOffset(addr) {
+    const chr4kBanks = Math.max(1, this.cart.chrRom.length >> 12);
+    if (this.control & 16) {
+      const bank2 = addr < 4096 ? this.chrBank0 : this.chrBank1;
+      return bank2 % chr4kBanks * 4096 + (addr & 4095);
+    }
+    const bank = (this.chrBank0 & 30) % chr4kBanks;
+    return bank * 4096 + addr;
+  }
+  ppuRead(addr) {
+    return this.cart.chrRom[this.chrOffset(addr)];
+  }
+  ppuWrite(addr, value) {
+    if (this.cart.chrIsRam) {
+      this.cart.chrRom[this.chrOffset(addr)] = value;
+    }
+  }
+  mirroring() {
+    switch (this.control & 3) {
+      case 0:
+        return 3 /* SingleScreenLower */;
+      case 1:
+        return 4 /* SingleScreenUpper */;
+      case 2:
+        return 1 /* Vertical */;
+      default:
+        return 0 /* Horizontal */;
+    }
+  }
+  onScanline() {
+  }
+  irqPending() {
+    return false;
+  }
+};
+
+// src/mappers/uxrom.ts
+var UxromMapper = class {
+  constructor(cart) {
+    this.cart = cart;
+  }
+  cart;
+  bank = 0;
+  cpuRead(addr) {
+    if (addr >= 49152) {
+      return this.cart.prgRom[this.cart.prgRom.length - 16384 + (addr - 49152)];
+    }
+    if (addr >= 32768) {
+      const bankCount = this.cart.prgRom.length >> 14;
+      return this.cart.prgRom[this.bank % bankCount * 16384 + (addr - 32768)];
+    }
+    if (addr >= 24576) return this.cart.prgRam[addr - 24576];
+    return 0;
+  }
+  cpuWrite(addr, value) {
+    if (addr >= 32768) {
+      this.bank = value & 15;
+    } else if (addr >= 24576) {
+      this.cart.prgRam[addr - 24576] = value;
+    }
+  }
+  ppuRead(addr) {
+    return this.cart.chrRom[addr & 8191];
+  }
+  ppuWrite(addr, value) {
+    if (this.cart.chrIsRam) this.cart.chrRom[addr & 8191] = value;
+  }
+  mirroring() {
+    return this.cart.mirroring;
+  }
+  onScanline() {
+  }
+  irqPending() {
+    return false;
+  }
+};
+
+// src/mappers/cnrom.ts
+var CnromMapper = class {
+  constructor(cart) {
+    this.cart = cart;
+    this.prgMask = cart.prgRom.length > 16384 ? 32767 : 16383;
+  }
+  cart;
+  bank = 0;
+  prgMask;
+  cpuRead(addr) {
+    if (addr >= 32768) return this.cart.prgRom[addr - 32768 & this.prgMask];
+    if (addr >= 24576) return this.cart.prgRam[addr - 24576];
+    return 0;
+  }
+  cpuWrite(addr, value) {
+    if (addr >= 32768) {
+      this.bank = value & 3;
+    } else if (addr >= 24576) {
+      this.cart.prgRam[addr - 24576] = value;
+    }
+  }
+  ppuRead(addr) {
+    const bankCount = Math.max(1, this.cart.chrRom.length >> 13);
+    return this.cart.chrRom[this.bank % bankCount * 8192 + (addr & 8191)];
+  }
+  ppuWrite(addr, value) {
+    if (this.cart.chrIsRam) this.cart.chrRom[addr & 8191] = value;
+  }
+  mirroring() {
+    return this.cart.mirroring;
+  }
+  onScanline() {
+  }
+  irqPending() {
+    return false;
+  }
+};
+
+// src/mappers/mmc3.ts
+var Mmc3Mapper = class {
+  constructor(cart) {
+    this.cart = cart;
+    this.mirrorVertical = cart.mirroring === 1 /* Vertical */;
+  }
+  cart;
+  bankSelect = 0;
+  banks = new Uint8Array(8);
+  // R0-R7
+  mirrorVertical = true;
+  irqLatch = 0;
+  irqCounter = 0;
+  irqReload = false;
+  irqEnabled = false;
+  irqFlag = false;
+  // ---- PRG: 8KB x4 ($8000/$A000/$C000/$E000) ----
+  prgBankAt(addr) {
+    const bankCount = this.cart.prgRom.length >> 13;
+    const mode = (this.bankSelect & 64) !== 0;
+    const slot = addr - 32768 >> 13;
+    let bank;
+    switch (slot) {
+      case 0:
+        bank = mode ? bankCount - 2 : this.banks[6];
+        break;
+      case 1:
+        bank = this.banks[7];
+        break;
+      case 2:
+        bank = mode ? this.banks[6] : bankCount - 2;
+        break;
+      default:
+        bank = bankCount - 1;
+        break;
+    }
+    return bank % bankCount;
+  }
+  cpuRead(addr) {
+    if (addr >= 32768) {
+      return this.cart.prgRom[this.prgBankAt(addr) * 8192 + (addr & 8191)];
+    }
+    if (addr >= 24576) return this.cart.prgRam[addr - 24576];
+    return 0;
+  }
+  cpuWrite(addr, value) {
+    if (addr < 24576) return;
+    if (addr < 32768) {
+      this.cart.prgRam[addr - 24576] = value;
+      return;
+    }
+    const even = (addr & 1) === 0;
+    if (addr < 40960) {
+      if (even) this.bankSelect = value;
+      else this.banks[this.bankSelect & 7] = value;
+    } else if (addr < 49152) {
+      if (even) this.mirrorVertical = (value & 1) === 0;
+    } else if (addr < 57344) {
+      if (even) this.irqLatch = value;
+      else this.irqReload = true;
+    } else {
+      if (even) {
+        this.irqEnabled = false;
+        this.irqFlag = false;
+      } else {
+        this.irqEnabled = true;
+      }
+    }
+  }
+  // ---- CHR: 2KB x2 + 1KB x4 ----
+  chrOffset(addr) {
+    const invert = (this.bankSelect & 128) !== 0;
+    let a = addr & 8191;
+    if (invert) a ^= 4096;
+    const chrSize = Math.max(this.cart.chrRom.length, 8192);
+    let bank1k;
+    if (a < 2048) {
+      bank1k = (this.banks[0] & 254) + (a >= 1024 ? 1 : 0);
+      return bank1k * 1024 % chrSize + (a & 1023);
+    }
+    if (a < 4096) {
+      bank1k = (this.banks[1] & 254) + (a >= 3072 ? 1 : 0);
+      return bank1k * 1024 % chrSize + (a & 1023);
+    }
+    const r = 2 + (a - 4096 >> 10);
+    bank1k = this.banks[r];
+    return bank1k * 1024 % chrSize + (a & 1023);
+  }
+  ppuRead(addr) {
+    return this.cart.chrRom[this.chrOffset(addr)];
+  }
+  ppuWrite(addr, value) {
+    if (this.cart.chrIsRam) this.cart.chrRom[this.chrOffset(addr)] = value;
+  }
+  mirroring() {
+    if (this.cart.mirroring === 2 /* FourScreen */) return 2 /* FourScreen */;
+    return this.mirrorVertical ? 1 /* Vertical */ : 0 /* Horizontal */;
+  }
+  // ---- スキャンライン IRQ ----
+  // PPU が可視スキャンラインの終端ごとに呼ぶ (A12 立ち上がり検出の近似)
+  onScanline() {
+    if (this.irqCounter === 0 || this.irqReload) {
+      this.irqCounter = this.irqLatch;
+      this.irqReload = false;
+    } else {
+      this.irqCounter--;
+    }
+    if (this.irqCounter === 0 && this.irqEnabled) {
+      this.irqFlag = true;
+    }
+  }
+  irqPending() {
+    return this.irqFlag;
+  }
+};
+
 // src/cartridge.ts
-var Cartridge = class {
+var Cartridge3 = class {
   prgRom;
   chrRom;
   chrIsRam;
@@ -794,8 +1095,18 @@ var Cartridge = class {
     switch (this.mapperId) {
       case 0:
         return new NromMapper(this);
+      case 1:
+        return new Mmc1Mapper(this);
+      case 2:
+        return new UxromMapper(this);
+      case 3:
+        return new CnromMapper(this);
+      case 4:
+        return new Mmc3Mapper(this);
       default:
-        throw new Error(`\u30DE\u30C3\u30D1\u30FC ${this.mapperId} \u306F\u672A\u5BFE\u5FDC\u3067\u3059 (\u73FE\u5728\u306F NROM \u306E\u307F)`);
+        throw new Error(
+          `\u30DE\u30C3\u30D1\u30FC ${this.mapperId} \u306F\u672A\u5BFE\u5FDC\u3067\u3059 (\u5BFE\u5FDC: 0=NROM, 1=MMC1, 2=UxROM, 3=CNROM, 4=MMC3)`
+        );
     }
   }
 };
@@ -1846,7 +2157,7 @@ var Nes = class {
   apu;
   controller;
   constructor(romData) {
-    this.cart = new Cartridge(romData);
+    this.cart = new Cartridge3(romData);
     this.mapper = this.cart.createMapper();
     this.bus = new Bus(this.mapper);
     this.cpu = new Cpu(this.bus);
