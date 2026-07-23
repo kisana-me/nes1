@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第2章 6502 CPU コア実装 — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第2章</h1>
+  <div class="subtitle">6502 CPU コア実装</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+エミュレータの心臓部である <strong>6502 互換 CPU</strong> を実装します。
+この章が終わると、NES のゲームプログラム(機械語)を 1 命令ずつ正しく実行できるようになります。
+まだ画面も音もありませんが、「計算機として動く NES」が手に入ります。
+</p>
+<p>実装したファイル:</p>
+<ul>
+  <li><code>src/cpu.ts</code> — CPU 本体(全公式命令 151 個)</li>
+  <li><code>src/bus.ts</code> — メモリバス(アドレスの振り分け)</li>
+  <li><code>src/cartridge.ts</code> — iNES ローダー</li>
+  <li><code>src/mappers/nrom.ts</code> — マッパー 0 (NROM)</li>
+  <li><code>tests/cpu.test.ts</code> — CPU のユニットテスト</li>
+</ul>
+
+<h2>CPU は何をする機械か</h2>
+<p>
+CPU の仕事は驚くほど単純で、次の 3 ステップの無限ループです。
+</p>
+<ol>
+  <li><strong>フェッチ</strong> — PC(プログラムカウンタ)が指すアドレスから 1 バイト読む。これが「命令」</li>
+  <li><strong>デコード</strong> — そのバイト(オペコード)が何の命令か・引数が何バイトかを判別する</li>
+  <li><strong>実行</strong> — 命令に応じてレジスタやメモリを変更し、PC を次の命令に進める</li>
+</ol>
+<p>エミュレータの CPU も全く同じで、<code>step()</code> メソッドがこの 1 周を実行します。</p>
+
+<h2>6502 のレジスタ</h2>
+<p>6502 はレジスタが非常に少ない CPU です。全部でこれだけ:</p>
+<table>
+  <tr><th>レジスタ</th><th>幅</th><th>役割</th></tr>
+  <tr><td><code>A</code> (アキュムレータ)</td><td>8bit</td><td>計算の主役。加算・減算・論理演算はほぼ A に対して行う</td></tr>
+  <tr><td><code>X</code>, <code>Y</code></td><td>8bit</td><td>インデックスレジスタ。配列アクセスの添字やループカウンタ</td></tr>
+  <tr><td><code>SP</code> (スタックポインタ)</td><td>8bit</td><td>スタック($0100-$01FF 固定)の現在位置</td></tr>
+  <tr><td><code>PC</code> (プログラムカウンタ)</td><td>16bit</td><td>次に実行する命令のアドレス</td></tr>
+  <tr><td><code>P</code> (ステータス)</td><td>8bit</td><td>フラグの集合(下記)</td></tr>
+</table>
+
+<h3>ステータスフラグ (P レジスタ)</h3>
+<pre><code>bit:  7 6 5 4 3 2 1 0
+      N V - B D I Z C
+      │ │     │ │ │ └ Carry    : 繰り上がり / 借りなし
+      │ │     │ │ └── Zero     : 結果が 0
+      │ │     │ └──── IRQ禁止  : 1 なら IRQ を無視
+      │ │     └────── Decimal  : NES では機能しない(フラグは残る)
+      │ └──────────── oVerflow : 符号付き計算のオーバーフロー
+      └────────────── Negative : 結果の bit7(符号ビット)</code></pre>
+<p>
+実装では P を 1 バイトで持たず、<code>this.c</code> <code>this.z</code> のように
+1 ビットずつ分解して保持しています。毎命令ビット演算でフラグを出し入れするより速く、コードも読みやすくなります。
+<code>PHP</code>(P をスタックに退避)などが必要なときだけ <code>getP()</code> で合成します。
+</p>
+
+<h2>アドレッシングモード — 6502 理解の最重要ポイント</h2>
+<p>
+同じ「LDA(A にロード)」でも、<strong>データをどこから持ってくるか</strong>で 8 種類のオペコードがあります。
+この「どこから」の指定方法をアドレッシングモードと呼びます。
+</p>
+<table>
+  <tr><th>モード</th><th>記法</th><th>意味</th></tr>
+  <tr><td>Immediate</td><td><code>LDA #$10</code></td><td>即値。$10 という値そのもの</td></tr>
+  <tr><td>Zero Page</td><td><code>LDA $10</code></td><td>アドレス $0010 の中身(先頭 256B は 1 バイトで指定でき速い)</td></tr>
+  <tr><td>Zero Page,X</td><td><code>LDA $10,X</code></td><td>$10+X の中身(256B 内でラップ)</td></tr>
+  <tr><td>Absolute</td><td><code>LDA $1234</code></td><td>アドレス $1234 の中身</td></tr>
+  <tr><td>Absolute,X/Y</td><td><code>LDA $1234,X</code></td><td>$1234+X の中身。配列アクセス</td></tr>
+  <tr><td>(Indirect,X)</td><td><code>LDA ($10,X)</code></td><td>$10+X にあるポインタの先</td></tr>
+  <tr><td>(Indirect),Y</td><td><code>LDA ($10),Y</code></td><td>$10 にあるポインタ+Y の先。C の <code>ptr[y]</code> に相当</td></tr>
+  <tr><td>Relative</td><td><code>BNE label</code></td><td>分岐専用。PC からの相対距離(±128)</td></tr>
+</table>
+<p>
+実装では、命令ごとに「何の操作か(LDA)」と「アドレスの計算方法(ZPX)」を分離した
+<strong>テーブル駆動</strong>にしました。256 個のオペコードそれぞれに
+<code>{ name, mode, cycles }</code> を登録し、<code>step()</code> は
+①モードに従ってアドレス解決 → ②命令名で switch、という 2 段構えです。
+これで 151 命令が「56 種類の操作 × 13 種類のモード」に整理され、コード量が大幅に減ります。
+</p>
+
+<h2>サイクル数を正しく数える</h2>
+<p>
+各命令には実機での消費サイクル数があります(<code>LDA #imm</code> は 2、<code>STA $1234,X</code> は 5 など)。
+これを正確に返すことが重要です。なぜなら第3章以降、
+<strong>「CPU が n サイクル使ったら PPU を 3n サイクル進める」</strong>という方法で
+CPU と PPU の同期を取るからです。サイクルがずれると画面が乱れます。
+</p>
+<p>さらに細かいルールが 2 つ:</p>
+<ul>
+  <li><strong>ページ境界クロス</strong>: <code>LDA $12F0,X</code> で X=0x20 のとき、アドレスが $1310 になり
+    上位バイト(ページ)が変わる。このとき読み出し系命令は +1 サイクル</li>
+  <li><strong>分岐</strong>: 不成立 2 / 成立 3 / 成立かつページ跨ぎ 4 サイクル</li>
+</ul>
+
+<h2>6502 の有名なバグも再現する</h2>
+<p>
+エミュレータは実機の<strong>バグまで</strong>再現する必要があります。ゲームがバグ込みの挙動に依存していることがあるからです。
+</p>
+<pre><code>// JMP ($02FF) — ポインタがページ境界にあるとき、
+// 上位バイトは $0300 ではなく "$0200" から読まれてしまう!
+private read16Bug(addr: number): number {
+  const lo = this.read(addr);
+  const hi = this.read((addr &amp; 0xff00) | ((addr + 1) &amp; 0xff));
+  return lo | (hi &lt;&lt; 8);
+}</code></pre>
+
+<h2>ADC — たった 1 命令に詰まった教科書</h2>
+<p>加算命令 ADC (Add with Carry) はアーキテクチャ学習の宝庫です。</p>
+<pre><code>private adc(m: number): void {
+  const sum = this.a + m + this.c;        // キャリー込みで加算
+  this.c = sum &gt; 0xff ? 1 : 0;            // 9bit 目 = 繰り上がり
+  const result = sum &amp; 0xff;
+  // 「同符号どうしを足したのに符号が変わった」= 符号付きオーバーフロー
+  this.v = (~(this.a ^ m) &amp; (this.a ^ result) &amp; 0x80) !== 0 ? 1 : 0;
+  this.a = result;
+  this.setZN(this.a);
+}</code></pre>
+<ul>
+  <li><strong>C フラグ</strong>は 8bit を超えた繰り上がり。これを使って 16bit・24bit の多倍長加算ができる</li>
+  <li><strong>V フラグ</strong>は符号付き(-128〜127)としてのオーバーフロー。C とは別物</li>
+  <li><strong>SBC(減算)は ADC の再利用</strong>: <code>A - M = A + (~M) + C</code>(2 の補数)。
+    実装は <code>this.adc(m ^ 0xff)</code> の 1 行</li>
+</ul>
+
+<h2>割り込み — ハードからの「呼び出し」</h2>
+<p>
+割り込みは「ハードウェアが CPU に横入りしてサブルーチンを呼ばせる」仕組みです。
+現在の PC とフラグをスタックに退避し、<strong>ベクタテーブル</strong>(ROM 末尾の固定アドレス)から
+ハンドラのアドレスを読んでジャンプします。
+</p>
+<table>
+  <tr><th>種類</th><th>ベクタ</th><th>用途</th></tr>
+  <tr><td>NMI(マスク不可)</td><td><code>$FFFA</code></td><td>PPU が毎フレーム VBlank 開始時に発生。ゲームの心拍</td></tr>
+  <tr><td>RESET</td><td><code>$FFFC</code></td><td>電源投入・リセットボタン</td></tr>
+  <tr><td>IRQ / BRK</td><td><code>$FFFE</code></td><td>APU・マッパー(MMC3)から。I フラグで無視できる</td></tr>
+</table>
+<p>
+NES のゲームは実質「NMI 駆動」で動いています。メインループで次フレームの準備をし、
+NMI が来たら PPU にデータを流し込む——このリズムは第3章で体感します。
+</p>
+
+<h2>バスとメモリマップ</h2>
+<p>
+CPU 自身はメモリの内容を知りません。<code>read(addr)</code> / <code>write(addr, value)</code> を
+呼ぶだけです。アドレスをデバイスに振り分けるのが <code>Bus</code> クラス:
+</p>
+<pre><code>read(addr: number): number {
+  if (addr &lt; 0x2000) return this.ram[addr &amp; 0x7ff]; // 2KB を 4 回ミラー
+  if (addr &lt; 0x4000) return this.ppu.readRegister(addr &amp; 7);
+  if (addr === 0x4016) return this.controller.read1();
+  ...
+  return this.mapper.cpuRead(addr); // カセットへ
+}</code></pre>
+<p>
+<code>addr &amp; 0x7ff</code> の 1 行が「ミラーリング」の実装です。実機ではアドレス線の上位ビットが
+配線されていないため、$0000 と $0800 と $1000 と $1800 は同じ RAM セルに繋がっています。
+</p>
+
+<div class="note">
+NES の CPU (RP2A03) は 6502 から <strong>10進モード (BCD) を削除した</strong>チップです。
+D フラグをセットしても加算は普通の 2 進で行われます。エミュレータでも BCD は実装しません。
+</div>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li><code>npm test</code> を実行</li>
+  <li>ロード/ストア、算術(フラグ含む)、シフト、分岐、スタック、割り込み、
+      サイクル数、ページ境界バグの計 49 アサーションが全て pass することを確認</li>
+  <li><code>npm run typecheck</code> がエラーなしで通ることを確認</li>
+</ol>
+<p>テストは <code>tests/cpu.test.ts</code> にあり、実際の機械語列
+(例: <code>0xa9, 0x42</code> = <code>LDA #$42</code>)を CPU に食わせて
+レジスタとフラグを検証しています。</p>
+</div>
+
+<div class="pager">
+  <a href="01-overview.html">← 第1章 プロジェクト概要</a>
+  <a href="03-ppu.html">第3章 PPU(グラフィック)→</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>
