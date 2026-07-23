@@ -64,6 +64,31 @@ loop:
 1 回だけにするための定番テクニックで、現代のゲーム開発でも同じ考え方を使います。
 </div>
 
+<h3>スマホ向けの画面上コントローラー</h3>
+<p>
+物理キーボードのないスマートフォンでも遊べるように、画面直下に
+<strong>十字キー・SELECT/START・A/B ボタン</strong>を配置しました。
+実装は「HTML のボタンに <code>data-btn="right"</code> のような属性を付け、
+<strong>Pointer イベント</strong>で NES ボタンのビットを立てる/落とす」だけです:
+</p>
+<pre><code>el.addEventListener("pointerdown", () =&gt; nes.controller.buttons1 |= BTN);
+el.addEventListener("pointerup",   () =&gt; nes.controller.buttons1 &amp;= ~BTN);</code></pre>
+<p>ポイントは 3 つ:</p>
+<ul>
+  <li><strong>Pointer イベント</strong>を使うと、マウス・タッチ・ペンを 1 つのコードで扱える</li>
+  <li>CSS の <code>touch-action: none</code> と <code>preventDefault()</code> で、
+    ボタン操作時のスクロールや二本指ズームを止める</li>
+  <li><code>setPointerCapture()</code> で、押した指がボタンから多少ずれても
+    <code>pointerup</code> を確実に受け取る(押しっぱなしバグの防止)。
+    十字キー+A の<strong>同時押し</strong>も、ボタンごとに独立してビットを管理するので自然に動く</li>
+</ul>
+<p>
+キーボード操作と全く同じ <code>nes.controller.buttons1</code> を触るだけなので、
+第4章で作ったシフトレジスタの仕組みはそのまま活きています。
+マウス環境では控えめに縮小表示し、タッチ端末(<code>pointer: coarse</code>)では
+大きく表示するよう CSS のメディアクエリで出し分けています。
+</p>
+
 <h2>オリジナルゲーム『MOSS HOP』</h2>
 <p>
 苔玉の妖精「モス」が森の遺跡で胞子を集めるプラットフォーマーです。

@@ -164,6 +164,106 @@ kbd {
 }
 #status { color: var(--sub); min-height: 1.4em; }
 
+/* ===== 画面上コントローラー (スマホ / タッチ操作) ===== */
+.touchpad {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 512px;
+  margin: 0.6rem auto 0;
+  padding: 0.6rem 0.4rem;
+  /* タッチでのスクロール・ダブルタップ拡大を抑止 */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tp-btn {
+  touch-action: none;
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: transform 0.05s, filter 0.05s;
+}
+.tp-btn.pressed {
+  transform: scale(0.92);
+  filter: brightness(1.4);
+}
+
+/* 十字キー: 3x3 グリッド */
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 3.1rem);
+  grid-template-rows: repeat(3, 3.1rem);
+  gap: 2px;
+}
+.dpad .tp-btn {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  font-size: 1.1rem;
+  color: var(--text);
+}
+.dpad-up { grid-column: 2; grid-row: 1; border-radius: 8px 8px 0 0; }
+.dpad-left { grid-column: 1; grid-row: 2; border-radius: 8px 0 0 8px; }
+.dpad-right { grid-column: 3; grid-row: 2; border-radius: 0 8px 8px 0; }
+.dpad-down { grid-column: 2; grid-row: 3; border-radius: 0 0 8px 8px; }
+
+/* SELECT / START */
+.tp-mid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.tp-sys {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+}
+
+/* A / B 顔ボタン */
+.ab {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+.tp-face {
+  width: 3.6rem;
+  height: 3.6rem;
+  border-radius: 50%;
+  font-size: 1.3rem;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4);
+}
+.tp-a { background: var(--accent); }
+.tp-b { background: var(--accent2); color: #10233a; }
+/* A ボタンを少し下げてファミコン風の斜め配置に */
+.tp-a { align-self: flex-start; }
+.tp-b { align-self: flex-end; }
+
+/* 細い画面ではボタンを少し小さく */
+@media (max-width: 420px) {
+  .dpad { grid-template-columns: repeat(3, 2.7rem); grid-template-rows: repeat(3, 2.7rem); }
+  .tp-face { width: 3.1rem; height: 3.1rem; }
+  .touchpad { gap: 0.5rem; }
+}
+
+/* マウス環境 (タッチ非対応) では邪魔になりやすいので、
+   ポインタが粗い (=タッチ) 端末以外では控えめに小さく表示 */
+@media (hover: hover) and (pointer: fine) {
+  .touchpad { opacity: 0.55; transform: scale(0.9); transform-origin: top center; }
+  .touchpad:hover { opacity: 1; }
+}
+
 /* debug UI (chapter 7) */
 .debug-grid {
   display: flex;

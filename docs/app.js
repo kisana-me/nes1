@@ -2515,6 +2515,7 @@ romInput.addEventListener("change", async () => {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    exposeForDebug(nes);
     if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes);
     statusEl.textContent = `${file.name} \u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F (PRG ${nes.cart.prgRom.length / 1024}KB, CHR ${nes.cart.chrRom.length / 1024}KB, \u30DE\u30C3\u30D1\u30FC ${nes.cart.mapperId})`;
     setRunning(true);
@@ -2538,6 +2539,47 @@ window.addEventListener("keyup", (e) => {
     e.preventDefault();
   }
 });
+var TOUCH_MAP = {
+  a: 1 /* A */,
+  b: 2 /* B */,
+  select: 4 /* Select */,
+  start: 8 /* Start */,
+  up: 16 /* Up */,
+  down: 32 /* Down */,
+  left: 64 /* Left */,
+  right: 128 /* Right */
+};
+function pressButton(btn) {
+  if (nes) nes.controller.buttons1 |= btn;
+}
+function exposeForDebug(n) {
+  window.nes = n;
+}
+function releaseButton(btn) {
+  if (nes) nes.controller.buttons1 &= ~btn;
+}
+for (const el of Array.from(document.querySelectorAll(".tp-btn"))) {
+  const btn = TOUCH_MAP[el.dataset.btn ?? ""];
+  if (!btn) continue;
+  const down = (e) => {
+    e.preventDefault();
+    el.classList.add("pressed");
+    el.setPointerCapture?.(e.pointerId);
+    pressButton(btn);
+  };
+  const up = (e) => {
+    e.preventDefault();
+    el.classList.remove("pressed");
+    releaseButton(btn);
+  };
+  el.addEventListener("pointerdown", down);
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+  el.addEventListener("pointerleave", (e) => {
+    if (e.buttons === 0) return;
+  });
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+}
 async function loadBundledGame() {
   try {
     const res = await fetch("mosshop.nes");
@@ -2545,6 +2587,7 @@ async function loadBundledGame() {
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    exposeForDebug(nes);
     if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes);
     statusEl.textContent = "\u540C\u68B1\u30B2\u30FC\u30E0\u300EMOSS HOP\u300F\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\u3002Enter \u3067\u30B9\u30BF\u30FC\u30C8!";
     setRunning(true);

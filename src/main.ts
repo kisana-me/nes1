@@ -120,6 +120,7 @@ romInput.addEventListener("change", async () => {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    exposeForDebug(nes);
     if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes!);
     statusEl.textContent =
       `${file.name} を読み込みました (PRG ${nes.cart.prgRom.length / 1024}KB, ` +
@@ -147,6 +148,59 @@ window.addEventListener("keyup", (e) => {
   }
 });
 
+// ---- 画面上コントローラー (スマホ / タッチ操作用) ----
+// data-btn 属性 → NES ボタンのマッピング
+const TOUCH_MAP: Record<string, number> = {
+  a: Button.A,
+  b: Button.B,
+  select: Button.Select,
+  start: Button.Start,
+  up: Button.Up,
+  down: Button.Down,
+  left: Button.Left,
+  right: Button.Right,
+};
+
+function pressButton(btn: number): void {
+  if (nes) nes.controller.buttons1 |= btn;
+}
+// 学習・デバッグ用: 読み込んだ NES インスタンスをコンソールから触れるように公開
+function exposeForDebug(n: Nes): void {
+  (window as unknown as { nes: Nes }).nes = n;
+}
+function releaseButton(btn: number): void {
+  if (nes) nes.controller.buttons1 &= ~btn;
+}
+
+// 各ボタンに Pointer イベントを配線。
+// setPointerCapture で、指がボタンから外れても pointerup を確実に受け取る。
+// touch-action:none (CSS) と preventDefault でスクロール・拡大を抑止し、
+// 複数ボタンの同時押し (十字キー + A など) にも対応する。
+for (const el of Array.from(document.querySelectorAll<HTMLElement>(".tp-btn"))) {
+  const btn = TOUCH_MAP[el.dataset.btn ?? ""];
+  if (!btn) continue;
+  const down = (e: PointerEvent) => {
+    e.preventDefault();
+    el.classList.add("pressed");
+    el.setPointerCapture?.(e.pointerId);
+    pressButton(btn);
+  };
+  const up = (e: PointerEvent) => {
+    e.preventDefault();
+    el.classList.remove("pressed");
+    releaseButton(btn);
+  };
+  el.addEventListener("pointerdown", down);
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+  // マウス操作でボタン外へドラッグしたときの保険
+  el.addEventListener("pointerleave", (e) => {
+    if (e.buttons === 0) return; // 押していなければ無視
+  });
+  // 右クリックメニュー等でボタンが押しっぱなしにならないように
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
 /** 同梱のオリジナルゲームを fetch してロードする */
 async function loadBundledGame(): Promise<void> {
   try {
@@ -155,6 +209,7 @@ async function loadBundledGame(): Promise<void> {
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
     attachAudio(nes);
+    exposeForDebug(nes);
     if (debugView.traceEnabled) nes.beforeStep = () => debugView.onStep(nes!);
     statusEl.textContent = "同梱ゲーム『MOSS HOP』を読み込みました。Enter でスタート!";
     setRunning(true);

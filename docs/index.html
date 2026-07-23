@@ -17,6 +17,24 @@
   <div>
     <canvas id="screen" width="256" height="240"></canvas>
     <p id="status">ROM を読み込んでください(現在は第1章: 画面はまだ動きません)</p>
+
+    <!-- 画面上コントローラー (スマホ / タッチ操作用。画面直下に配置) -->
+    <div class="touchpad" id="touchpad">
+      <div class="dpad">
+        <button class="tp-btn dpad-up" data-btn="up" aria-label="上">▲</button>
+        <button class="tp-btn dpad-left" data-btn="left" aria-label="左">◀</button>
+        <button class="tp-btn dpad-right" data-btn="right" aria-label="右">▶</button>
+        <button class="tp-btn dpad-down" data-btn="down" aria-label="下">▼</button>
+      </div>
+      <div class="tp-mid">
+        <button class="tp-btn tp-sys" data-btn="select" aria-label="SELECT">SELECT</button>
+        <button class="tp-btn tp-sys" data-btn="start" aria-label="START">START</button>
+      </div>
+      <div class="ab">
+        <button class="tp-btn tp-face tp-b" data-btn="b" aria-label="B ボタン">B</button>
+        <button class="tp-btn tp-face tp-a" data-btn="a" aria-label="A ボタン">A</button>
+      </div>
+    </div>
   </div>
   <div class="emu-panel">
     <h2>🎮 操作</h2>
