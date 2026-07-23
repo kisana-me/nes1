@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第5章 APU(音声)実装 — nes1</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site">
+  <h1><a href="../index.html">nes1</a> / 第5章</h1>
+  <div class="subtitle">APU(音声)実装</div>
+</header>
+<main class="doc">
+
+<h2>この章のゴール</h2>
+<p>
+NES の音源 <strong>APU (Audio Processing Unit)</strong> を実装し、エミュレータに音を与えます。
+あわせて『MOSS HOP』にジャンプ・アイテム取得・クリアの効果音を追加し、
+「ゲームが APU に書いた値が、ブラウザのスピーカーから聞こえる」までを繋ぎます。
+</p>
+<p>実装したファイル:</p>
+<ul>
+  <li><code>src/apu.ts</code> — APU 本体(5 チャンネル + フレームカウンタ + ミキサー)</li>
+  <li><code>src/audio.ts</code> — Web Audio API への出力(リングバッファ)</li>
+  <li><code>game/build-game.ts</code> — 効果音ルーチンを追加</li>
+</ul>
+
+<h2>NES の音は「回路」でできている</h2>
+<p>
+現代の音楽制作は波形データ(サンプル)を再生しますが、NES の音は
+<strong>デジタル回路が生成する波形そのもの</strong>です。チャンネルは 5 つ:
+</p>
+<table>
+  <tr><th>チャンネル</th><th>波形</th><th>主な用途</th></tr>
+  <tr><td>パルス 1</td><td>矩形波 (duty 12.5/25/50/75%)</td><td>メロディ、効果音</td></tr>
+  <tr><td>パルス 2</td><td>矩形波</td><td>ハモリ、効果音</td></tr>
+  <tr><td>三角波</td><td>32 段の擬似三角波</td><td>ベースライン</td></tr>
+  <tr><td>ノイズ</td><td>LFSR による擬似乱数</td><td>ドラム、爆発</td></tr>
+  <tr><td>DMC</td><td>1bit デルタ変調サンプル</td><td>ボイス、ドラム</td></tr>
+</table>
+<p>
+「ファミコンの音」と聞いて思い浮かべるピコピコ音は矩形波の音色です。
+duty 比(波形の上下比率)を変えるだけで音色が変わります。
+</p>
+<pre><code>duty 12.5% : _|‾|______|‾|______   細く鋭い音
+duty 25%   : _|‾‾|_____|‾‾|_____   明るい音
+duty 50%   : _|‾‾‾‾|___|‾‾‾‾|___   丸く太い音</code></pre>
+
+<h2>音程 = タイマー(分周器)</h2>
+<p>
+各チャンネルには 11 ビットの「タイマー」があり、CPU クロックを分周して波形を進めます。
+タイマー値と周波数の関係は:
+</p>
+<pre><code>周波数 = 1789773 / (16 × (タイマー値 + 1))   ※パルス波
+
+例: 440Hz (ラの音) を出したい → タイマー = 1789773/(16×440) - 1 ≈ 253</code></pre>
+<p>
+ゲーム機のドレミは、この割り算をあらかじめ計算した「周波数テーブル」で実現されています。
+</p>
+
+<h2>音を「切る」仕組み — 長さカウンタとエンベロープ</h2>
+<p>
+CPU が音を止めるまで鳴りっぱなしでは効果音に使いにくいので、APU には自動化機構があります。
+</p>
+<ul>
+  <li><strong>長さカウンタ</strong> — キーオン時にセットされ、0 になるとチャンネルが無音になる(自動ノートオフ)</li>
+  <li><strong>エンベロープ</strong> — 音量 15 から一定速度で減衰(ピアノのような自然な減衰)</li>
+  <li><strong>スイープ</strong> — 音程を自動で上下させる(『ピュン』というジャンプ音はこれ)</li>
+  <li><strong>リニアカウンタ</strong> — 三角波専用の高精度な長さ制御</li>
+</ul>
+<p>
+これらを 1 秒に約 240 回駆動するのが<strong>フレームカウンタ</strong>です。
+$4017 の設定により 4 ステップ/5 ステップのシーケンスで、
+エンベロープ(四半フレーム)と長さカウンタ・スイープ(半フレーム)をクロックします。
+実装ではこの NTSC 実機のサイクル数 (7457, 14913, 22371, 29829) をそのまま使っています。
+</p>
+
+<h2>ミキサー — 実機の回路をそのまま式に</h2>
+<p>
+5 チャンネルの出力は単純な足し算ではなく、実機の抵抗回路に由来する<strong>非線形の合成式</strong>で混ざります:
+</p>
+<pre><code>pulse_out = 95.88 / (8128 / (pulse1 + pulse2) + 100)
+tnd_out   = 159.79 / (1 / (tri/8227 + noise/12241 + dmc/22638) + 100)
+output    = pulse_out + tnd_out</code></pre>
+<p>
+この式は「チャンネルを増やすほど 1 チャンネルあたりの音量が下がる」という
+実機の音量感を再現します。エミュレータ界で標準的に使われている近似式です。
+</p>
+
+<h2>ブラウザへの出力 — サンプリングとバッファ</h2>
+<p>
+APU は CPU と同じ 1.79MHz で動きますが、ブラウザの音声は 44.1kHz(約 40 サイクルに 1 サンプル)。
+そこで <strong>ダウンサンプリング</strong>します:
+</p>
+<pre><code>// CPU サイクルごとに:
+sampleCounter++;
+if (sampleCounter &gt;= 1789773 / 44100) {  // ≈ 40.58 サイクルごと
+  sampleCounter -= 1789773 / 44100;
+  onSample(mix());                        // 1 サンプル出力
+}</code></pre>
+<p>
+生成したサンプルは<strong>リングバッファ</strong>(<code>src/audio.ts</code>)に貯め、
+Web Audio API のコールバックが取り出して再生します。
+エミュレータは requestAnimationFrame(描画タイミング)、音声はオーディオスレッドと、
+別々のクロックで動くため、バッファが速度差を吸収します。
+バッファが空のときは直前の値を出し続けて「プチッ」というノイズを防ぎます。
+</p>
+<div class="note">
+ブラウザは自動再生を制限しているため、<code>AudioContext</code> は
+ユーザーのクリック操作(ROM 読み込みボタン)の中で生成しています。
+</div>
+
+<h2>『MOSS HOP』に効果音を追加</h2>
+<p>ゲーム側からは、APU はただのレジスタ($4000-$4017)です。ジャンプ音はこれだけ:</p>
+<pre><code>sfxJump:
+  LDA #$44      ; duty 25%, エンベロープ減衰
+  STA $4000
+  LDA #$8B      ; スイープ有効・negate → 音程が上昇していく
+  STA $4001
+  LDA #$D0      ; 開始音程 ≈ 233Hz
+  STA $4002
+  LDA #$49      ; 長さカウンタ 8 (約 130ms で自動停止)
+  STA $4003
+  RTS</code></pre>
+<p>
+4 バイト書き込むだけで、あとはスイープが音程を上げ、エンベロープが音量を減衰させ、
+長さカウンタが音を止めてくれます。<strong>ハードウェアが効果音を演奏してくれる</strong>——
+これが 1983 年の設計の合理性です。ほかに胞子取得の「ピロン」(パルス2、880Hz)と、
+クリア時の和音(C5+E5)を実装しました。
+</p>
+
+<div class="try">
+<p><strong>この章の動作確認手順</strong></p>
+<ol>
+  <li><code>npm test</code> — APU テスト 4 件を含む全件 pass。
+    <code>testGameJumpSfx</code> は「ジャンプ前は無音サンプルのみ →
+    ジャンプ後に音量のあるサンプルが 500 個以上生成される」ことを検証します</li>
+  <li><code>npm run build:game &amp;&amp; npm run serve</code> でブラウザを開き、『MOSS HOP』をプレイ</li>
+  <li>X でジャンプ →「ピュン」、胞子を取る →「ピロン」、
+    2 レベルクリア →「ピンポーン」(和音) が聞こえれば OK</li>
+  <li>「🔊 音声 ON」ボタンでミュートの切り替えができる</li>
+</ol>
+</div>
+
+<div class="pager">
+  <a href="04-controller.html">← 第4章 コントローラーとオリジナルゲーム</a>
+  <a href="06-mappers.html">第6章 マッパー対応拡張 →</a>
+</div>
+</main>
+<footer class="site">nes1 — TypeScript で作る学習用 NES エミュレータ</footer>
+</body>
+</html>

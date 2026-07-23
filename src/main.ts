@@ -5,6 +5,16 @@
 
 import { Nes } from "./nes";
 import { Button } from "./controller";
+import { AudioOutput } from "./audio";
+
+const audio = new AudioOutput();
+
+/** NES 起動時に音声を配線する */
+function attachAudio(n: Nes): void {
+  const rate = audio.start();
+  n.apu.setSampleRate(rate);
+  n.apu.onSample = (v) => audio.push(v);
+}
 
 // キーボード → コントローラーのマッピング
 const KEYMAP: Record<string, number> = {
@@ -65,6 +75,7 @@ romInput.addEventListener("change", async () => {
   try {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
+    attachAudio(nes);
     statusEl.textContent =
       `${file.name} を読み込みました (PRG ${nes.cart.prgRom.length / 1024}KB, ` +
       `CHR ${nes.cart.chrRom.length / 1024}KB, マッパー ${nes.cart.mapperId})`;
@@ -98,6 +109,7 @@ async function loadBundledGame(): Promise<void> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
+    attachAudio(nes);
     statusEl.textContent = "同梱ゲーム『MOSS HOP』を読み込みました。Enter でスタート!";
     setRunning(true);
   } catch (e) {
@@ -106,6 +118,11 @@ async function loadBundledGame(): Promise<void> {
 }
 document.getElementById("btn-sample")?.addEventListener("click", () => {
   void loadBundledGame();
+});
+
+document.getElementById("btn-mute")?.addEventListener("click", (e) => {
+  audio.muted = !audio.muted;
+  (e.target as HTMLButtonElement).textContent = audio.muted ? "🔇 音声 OFF" : "🔊 音声 ON";
 });
 
 btnRun.addEventListener("click", () => setRunning(true));

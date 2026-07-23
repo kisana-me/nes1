@@ -1301,6 +1301,541 @@ var StandardController = class {
   }
 };
 
+// src/apu.ts
+var LENGTH_TABLE = [
+  10,
+  254,
+  20,
+  2,
+  40,
+  4,
+  80,
+  6,
+  160,
+  8,
+  60,
+  10,
+  14,
+  12,
+  26,
+  14,
+  12,
+  16,
+  24,
+  18,
+  48,
+  20,
+  96,
+  22,
+  192,
+  24,
+  72,
+  26,
+  16,
+  28,
+  32,
+  30
+];
+var DUTY_TABLE = [
+  [0, 1, 0, 0, 0, 0, 0, 0],
+  // 12.5%
+  [0, 1, 1, 0, 0, 0, 0, 0],
+  // 25%
+  [0, 1, 1, 1, 1, 0, 0, 0],
+  // 50%
+  [1, 0, 0, 1, 1, 1, 1, 1]
+  // 25% 反転
+];
+var TRIANGLE_TABLE = [
+  15,
+  14,
+  13,
+  12,
+  11,
+  10,
+  9,
+  8,
+  7,
+  6,
+  5,
+  4,
+  3,
+  2,
+  1,
+  0,
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15
+];
+var NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
+var DMC_RATES = [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54];
+var Envelope = class {
+  start = false;
+  loop = false;
+  constant = false;
+  period = 0;
+  divider = 0;
+  decay = 0;
+  clock() {
+    if (this.start) {
+      this.start = false;
+      this.decay = 15;
+      this.divider = this.period;
+    } else if (this.divider > 0) {
+      this.divider--;
+    } else {
+      this.divider = this.period;
+      if (this.decay > 0) {
+        this.decay--;
+      } else if (this.loop) {
+        this.decay = 15;
+      }
+    }
+  }
+  get volume() {
+    return this.constant ? this.period : this.decay;
+  }
+};
+var Pulse = class {
+  constructor(channel) {
+    this.channel = channel;
+  }
+  channel;
+  enabled = false;
+  lengthCounter = 0;
+  envelope = new Envelope();
+  duty = 0;
+  dutyPos = 0;
+  timer = 0;
+  timerPeriod = 0;
+  // スイープ (音程の自動変化)
+  sweepEnabled = false;
+  sweepPeriod = 0;
+  sweepNegate = false;
+  sweepShift = 0;
+  sweepDivider = 0;
+  sweepReload = false;
+  writeReg(reg, value) {
+    switch (reg) {
+      case 0:
+        this.duty = value >> 6 & 3;
+        this.envelope.loop = (value & 32) !== 0;
+        this.envelope.constant = (value & 16) !== 0;
+        this.envelope.period = value & 15;
+        break;
+      case 1:
+        this.sweepEnabled = (value & 128) !== 0;
+        this.sweepPeriod = value >> 4 & 7;
+        this.sweepNegate = (value & 8) !== 0;
+        this.sweepShift = value & 7;
+        this.sweepReload = true;
+        break;
+      case 2:
+        this.timerPeriod = this.timerPeriod & 1792 | value;
+        break;
+      case 3:
+        this.timerPeriod = this.timerPeriod & 255 | (value & 7) << 8;
+        if (this.enabled) this.lengthCounter = LENGTH_TABLE[value >> 3];
+        this.dutyPos = 0;
+        this.envelope.start = true;
+        break;
+    }
+  }
+  /** APU サイクル (CPU の 1/2) ごとに呼ばれる */
+  clockTimer() {
+    if (this.timer > 0) {
+      this.timer--;
+    } else {
+      this.timer = this.timerPeriod;
+      this.dutyPos = this.dutyPos + 1 & 7;
+    }
+  }
+  clockLength() {
+    if (!this.envelope.loop && this.lengthCounter > 0) this.lengthCounter--;
+  }
+  clockSweep() {
+    const target = this.sweepTarget();
+    if (this.sweepDivider === 0 && this.sweepEnabled && this.sweepShift > 0 && !this.sweepMuted()) {
+      this.timerPeriod = target;
+    }
+    if (this.sweepDivider === 0 || this.sweepReload) {
+      this.sweepDivider = this.sweepPeriod;
+      this.sweepReload = false;
+    } else {
+      this.sweepDivider--;
+    }
+  }
+  sweepTarget() {
+    const change = this.timerPeriod >> this.sweepShift;
+    if (this.sweepNegate) {
+      return this.timerPeriod - change - (this.channel === 1 ? 1 : 0);
+    }
+    return this.timerPeriod + change;
+  }
+  sweepMuted() {
+    return this.timerPeriod < 8 || this.sweepTarget() > 2047;
+  }
+  output() {
+    if (!this.enabled || this.lengthCounter === 0) return 0;
+    if (this.sweepMuted()) return 0;
+    if (DUTY_TABLE[this.duty][this.dutyPos] === 0) return 0;
+    return this.envelope.volume;
+  }
+};
+var Triangle = class {
+  enabled = false;
+  lengthCounter = 0;
+  linearCounter = 0;
+  linearReload = 0;
+  linearReloadFlag = false;
+  control = false;
+  // 長さカウンタ停止 + リニアカウンタ制御
+  timer = 0;
+  timerPeriod = 0;
+  pos = 0;
+  writeReg(reg, value) {
+    switch (reg) {
+      case 0:
+        this.control = (value & 128) !== 0;
+        this.linearReload = value & 127;
+        break;
+      case 2:
+        this.timerPeriod = this.timerPeriod & 1792 | value;
+        break;
+      case 3:
+        this.timerPeriod = this.timerPeriod & 255 | (value & 7) << 8;
+        if (this.enabled) this.lengthCounter = LENGTH_TABLE[value >> 3];
+        this.linearReloadFlag = true;
+        break;
+    }
+  }
+  /** CPU サイクルごと */
+  clockTimer() {
+    if (this.timer > 0) {
+      this.timer--;
+    } else {
+      this.timer = this.timerPeriod;
+      if (this.lengthCounter > 0 && this.linearCounter > 0) {
+        this.pos = this.pos + 1 & 31;
+      }
+    }
+  }
+  clockLinear() {
+    if (this.linearReloadFlag) {
+      this.linearCounter = this.linearReload;
+    } else if (this.linearCounter > 0) {
+      this.linearCounter--;
+    }
+    if (!this.control) this.linearReloadFlag = false;
+  }
+  clockLength() {
+    if (!this.control && this.lengthCounter > 0) this.lengthCounter--;
+  }
+  output() {
+    if (!this.enabled || this.lengthCounter === 0 || this.linearCounter === 0) return 0;
+    if (this.timerPeriod < 2) return 7;
+    return TRIANGLE_TABLE[this.pos];
+  }
+};
+var Noise = class {
+  enabled = false;
+  lengthCounter = 0;
+  envelope = new Envelope();
+  mode = false;
+  timer = 0;
+  timerPeriod = NOISE_PERIODS[0];
+  shift = 1;
+  // 15bit LFSR
+  writeReg(reg, value) {
+    switch (reg) {
+      case 0:
+        this.envelope.loop = (value & 32) !== 0;
+        this.envelope.constant = (value & 16) !== 0;
+        this.envelope.period = value & 15;
+        break;
+      case 2:
+        this.mode = (value & 128) !== 0;
+        this.timerPeriod = NOISE_PERIODS[value & 15];
+        break;
+      case 3:
+        if (this.enabled) this.lengthCounter = LENGTH_TABLE[value >> 3];
+        this.envelope.start = true;
+        break;
+    }
+  }
+  clockTimer() {
+    if (this.timer > 0) {
+      this.timer--;
+    } else {
+      this.timer = this.timerPeriod;
+      const feedback = this.shift & 1 ^ this.shift >> (this.mode ? 6 : 1) & 1;
+      this.shift = this.shift >> 1 | feedback << 14;
+    }
+  }
+  clockLength() {
+    if (!this.envelope.loop && this.lengthCounter > 0) this.lengthCounter--;
+  }
+  output() {
+    if (!this.enabled || this.lengthCounter === 0) return 0;
+    if (this.shift & 1) return 0;
+    return this.envelope.volume;
+  }
+};
+var Dmc = class {
+  constructor(readMemory) {
+    this.readMemory = readMemory;
+  }
+  readMemory;
+  enabled = false;
+  irqEnabled = false;
+  irqFlag = false;
+  loop = false;
+  outputLevel = 0;
+  bytesRemaining = 0;
+  rate = DMC_RATES[0];
+  timer = 0;
+  sampleAddress = 49152;
+  sampleLength = 0;
+  currentAddress = 0;
+  shiftReg = 0;
+  bitsRemaining = 0;
+  silence = true;
+  writeReg(reg, value) {
+    switch (reg) {
+      case 0:
+        this.irqEnabled = (value & 128) !== 0;
+        if (!this.irqEnabled) this.irqFlag = false;
+        this.loop = (value & 64) !== 0;
+        this.rate = DMC_RATES[value & 15];
+        break;
+      case 1:
+        this.outputLevel = value & 127;
+        break;
+      case 2:
+        this.sampleAddress = 49152 | value << 6;
+        break;
+      case 3:
+        this.sampleLength = value << 4 | 1;
+        break;
+    }
+  }
+  restart() {
+    this.currentAddress = this.sampleAddress;
+    this.bytesRemaining = this.sampleLength;
+  }
+  clockTimer() {
+    if (!this.enabled) return;
+    if (this.timer > 0) {
+      this.timer--;
+      return;
+    }
+    this.timer = this.rate - 1;
+    if (!this.silence) {
+      if (this.shiftReg & 1) {
+        if (this.outputLevel <= 125) this.outputLevel += 2;
+      } else if (this.outputLevel >= 2) {
+        this.outputLevel -= 2;
+      }
+    }
+    this.shiftReg >>= 1;
+    if (this.bitsRemaining > 0) this.bitsRemaining--;
+    if (this.bitsRemaining === 0) {
+      this.bitsRemaining = 8;
+      if (this.bytesRemaining > 0) {
+        this.shiftReg = this.readMemory(this.currentAddress);
+        this.silence = false;
+        this.currentAddress = this.currentAddress === 65535 ? 32768 : this.currentAddress + 1;
+        this.bytesRemaining--;
+        if (this.bytesRemaining === 0) {
+          if (this.loop) this.restart();
+          else if (this.irqEnabled) this.irqFlag = true;
+        }
+      } else {
+        this.silence = true;
+      }
+    }
+  }
+};
+var Apu = class {
+  pulse1 = new Pulse(1);
+  pulse2 = new Pulse(2);
+  triangle = new Triangle();
+  noise = new Noise();
+  dmc;
+  // フレームカウンタ
+  frameMode5 = false;
+  frameIrqInhibit = false;
+  frameIrqFlag = false;
+  frameCycle = 0;
+  // サンプリング
+  sampleRate = 44100;
+  onSample = null;
+  sampleCounter = 0;
+  cyclesPerSample = 1789773 / 44100;
+  oddCycle = false;
+  constructor(readMemory = () => 0) {
+    this.dmc = new Dmc(readMemory);
+  }
+  setSampleRate(rate) {
+    this.sampleRate = rate;
+    this.cyclesPerSample = 1789773 / rate;
+  }
+  // ---------- レジスタ ----------
+  writeRegister(addr, value) {
+    if (addr >= 16384 && addr <= 16387) this.pulse1.writeReg(addr & 3, value);
+    else if (addr >= 16388 && addr <= 16391) this.pulse2.writeReg(addr & 3, value);
+    else if (addr >= 16392 && addr <= 16395) this.triangle.writeReg(addr & 3, value);
+    else if (addr >= 16396 && addr <= 16399) this.noise.writeReg(addr & 3, value);
+    else if (addr >= 16400 && addr <= 16403) this.dmc.writeReg(addr & 3, value);
+    else if (addr === 16405) {
+      this.pulse1.enabled = (value & 1) !== 0;
+      this.pulse2.enabled = (value & 2) !== 0;
+      this.triangle.enabled = (value & 4) !== 0;
+      this.noise.enabled = (value & 8) !== 0;
+      if (!this.pulse1.enabled) this.pulse1.lengthCounter = 0;
+      if (!this.pulse2.enabled) this.pulse2.lengthCounter = 0;
+      if (!this.triangle.enabled) this.triangle.lengthCounter = 0;
+      if (!this.noise.enabled) this.noise.lengthCounter = 0;
+      const dmcEnable = (value & 16) !== 0;
+      this.dmc.enabled = dmcEnable;
+      this.dmc.irqFlag = false;
+      if (dmcEnable) {
+        if (this.dmc.bytesRemaining === 0) this.dmc.restart();
+      } else {
+        this.dmc.bytesRemaining = 0;
+      }
+    } else if (addr === 16407) {
+      this.frameMode5 = (value & 128) !== 0;
+      this.frameIrqInhibit = (value & 64) !== 0;
+      if (this.frameIrqInhibit) this.frameIrqFlag = false;
+      this.frameCycle = 0;
+      if (this.frameMode5) {
+        this.clockQuarter();
+        this.clockHalf();
+      }
+    }
+  }
+  readStatus() {
+    let status = 0;
+    if (this.pulse1.lengthCounter > 0) status |= 1;
+    if (this.pulse2.lengthCounter > 0) status |= 2;
+    if (this.triangle.lengthCounter > 0) status |= 4;
+    if (this.noise.lengthCounter > 0) status |= 8;
+    if (this.dmc.bytesRemaining > 0) status |= 16;
+    if (this.frameIrqFlag) status |= 64;
+    if (this.dmc.irqFlag) status |= 128;
+    this.frameIrqFlag = false;
+    return status;
+  }
+  irqPending() {
+    return this.frameIrqFlag || this.dmc.irqFlag;
+  }
+  // ---------- タイミング ----------
+  /** CPU サイクル数だけ APU を進める */
+  tick(cpuCycles) {
+    for (let i = 0; i < cpuCycles; i++) {
+      this.stepCycle();
+    }
+  }
+  stepCycle() {
+    this.triangle.clockTimer();
+    this.dmc.clockTimer();
+    if (this.oddCycle) {
+      this.pulse1.clockTimer();
+      this.pulse2.clockTimer();
+      this.noise.clockTimer();
+    }
+    this.oddCycle = !this.oddCycle;
+    this.clockFrameCounter();
+    this.sampleCounter++;
+    if (this.sampleCounter >= this.cyclesPerSample) {
+      this.sampleCounter -= this.cyclesPerSample;
+      this.onSample?.(this.mix());
+    }
+  }
+  /** フレームカウンタ: 4 ステップ / 5 ステップのシーケンス */
+  clockFrameCounter() {
+    this.frameCycle++;
+    if (!this.frameMode5) {
+      switch (this.frameCycle) {
+        case 7457:
+          this.clockQuarter();
+          break;
+        case 14913:
+          this.clockQuarter();
+          this.clockHalf();
+          break;
+        case 22371:
+          this.clockQuarter();
+          break;
+        case 29829:
+          this.clockQuarter();
+          this.clockHalf();
+          if (!this.frameIrqInhibit) this.frameIrqFlag = true;
+          this.frameCycle = 0;
+          break;
+      }
+    } else {
+      switch (this.frameCycle) {
+        case 7457:
+          this.clockQuarter();
+          break;
+        case 14913:
+          this.clockQuarter();
+          this.clockHalf();
+          break;
+        case 22371:
+          this.clockQuarter();
+          break;
+        case 37281:
+          this.clockQuarter();
+          this.clockHalf();
+          this.frameCycle = 0;
+          break;
+      }
+    }
+  }
+  clockQuarter() {
+    this.pulse1.envelope.clock();
+    this.pulse2.envelope.clock();
+    this.noise.envelope.clock();
+    this.triangle.clockLinear();
+  }
+  clockHalf() {
+    this.pulse1.clockLength();
+    this.pulse2.clockLength();
+    this.triangle.clockLength();
+    this.noise.clockLength();
+    this.pulse1.clockSweep();
+    this.pulse2.clockSweep();
+  }
+  // ---------- ミキサー ----------
+  /** 5 チャンネルを実機の非線形ミキサー式で合成 (-1.0 〜 1.0) */
+  mix() {
+    const p = this.pulse1.output() + this.pulse2.output();
+    const t = this.triangle.output();
+    const n = this.noise.output();
+    const d = this.dmc.outputLevel;
+    const pulseOut = p === 0 ? 0 : 95.88 / (8128 / p + 100);
+    const tnd = t / 8227 + n / 12241 + d / 22638;
+    const tndOut = tnd === 0 ? 0 : 159.79 / (1 / tnd + 100);
+    return (pulseOut + tndOut) * 1.5;
+  }
+};
+
 // src/nes.ts
 var Nes = class {
   cart;
@@ -1308,6 +1843,7 @@ var Nes = class {
   bus;
   cpu;
   ppu;
+  apu;
   controller;
   constructor(romData) {
     this.cart = new Cartridge(romData);
@@ -1316,7 +1852,9 @@ var Nes = class {
     this.cpu = new Cpu(this.bus);
     this.ppu = new Ppu(this.mapper);
     this.controller = new StandardController();
+    this.apu = new Apu((addr) => this.bus.read(addr));
     this.bus.ppu = this.ppu;
+    this.bus.apu = this.apu;
     this.bus.controller = this.controller;
     this.ppu.onNmi = () => this.cpu.requestNmi();
     this.bus.onOamDma = () => {
@@ -1344,7 +1882,8 @@ var Nes = class {
     for (let i = 0; i < cpuCycles * 3; i++) {
       this.ppu.tick();
     }
-    this.cpu.setIrqLine(this.mapper.irqPending());
+    this.apu.tick(cpuCycles);
+    this.cpu.setIrqLine(this.mapper.irqPending() || this.apu.irqPending());
     return cpuCycles;
   }
   /** 現在のフレームバッファ (256x240, ABGR packed) */
@@ -1353,7 +1892,59 @@ var Nes = class {
   }
 };
 
+// src/audio.ts
+var AudioOutput = class {
+  ctx = null;
+  node = null;
+  buffer = new Float32Array(16384);
+  readPos = 0;
+  writePos = 0;
+  lastSample = 0;
+  muted = false;
+  /** ユーザー操作 (クリック等) の中で呼ぶこと (ブラウザの自動再生制限のため) */
+  start() {
+    if (this.ctx) {
+      void this.ctx.resume();
+      return this.ctx.sampleRate;
+    }
+    this.ctx = new AudioContext();
+    this.node = this.ctx.createScriptProcessor(2048, 0, 1);
+    this.node.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      for (let i = 0; i < out.length; i++) {
+        if (this.readPos !== this.writePos) {
+          this.lastSample = this.buffer[this.readPos];
+          this.readPos = this.readPos + 1 & this.buffer.length - 1;
+        }
+        out[i] = this.muted ? 0 : this.lastSample;
+      }
+    };
+    this.node.connect(this.ctx.destination);
+    return this.ctx.sampleRate;
+  }
+  /** APU の onSample から呼ばれる */
+  push(value) {
+    const next = this.writePos + 1 & this.buffer.length - 1;
+    if (next === this.readPos) return;
+    this.buffer[this.writePos] = value;
+    this.writePos = next;
+  }
+  /** 溜まっているサンプル数 (速度調整の目安) */
+  get queued() {
+    return this.writePos - this.readPos & this.buffer.length - 1;
+  }
+  suspend() {
+    void this.ctx?.suspend();
+  }
+};
+
 // src/main.ts
+var audio = new AudioOutput();
+function attachAudio(n) {
+  const rate = audio.start();
+  n.apu.setSampleRate(rate);
+  n.apu.onSample = (v) => audio.push(v);
+}
 var KEYMAP = {
   KeyX: 1 /* A */,
   KeyZ: 2 /* B */,
@@ -1405,6 +1996,7 @@ romInput.addEventListener("change", async () => {
   try {
     const data = new Uint8Array(await file.arrayBuffer());
     nes = new Nes(data);
+    attachAudio(nes);
     statusEl.textContent = `${file.name} \u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F (PRG ${nes.cart.prgRom.length / 1024}KB, CHR ${nes.cart.chrRom.length / 1024}KB, \u30DE\u30C3\u30D1\u30FC ${nes.cart.mapperId})`;
     setRunning(true);
   } catch (e) {
@@ -1433,6 +2025,7 @@ async function loadBundledGame() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = new Uint8Array(await res.arrayBuffer());
     nes = new Nes(data);
+    attachAudio(nes);
     statusEl.textContent = "\u540C\u68B1\u30B2\u30FC\u30E0\u300EMOSS HOP\u300F\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\u3002Enter \u3067\u30B9\u30BF\u30FC\u30C8!";
     setRunning(true);
   } catch (e) {
@@ -1441,6 +2034,10 @@ async function loadBundledGame() {
 }
 document.getElementById("btn-sample")?.addEventListener("click", () => {
   void loadBundledGame();
+});
+document.getElementById("btn-mute")?.addEventListener("click", (e) => {
+  audio.muted = !audio.muted;
+  e.target.textContent = audio.muted ? "\u{1F507} \u97F3\u58F0 OFF" : "\u{1F50A} \u97F3\u58F0 ON";
 });
 btnRun.addEventListener("click", () => setRunning(true));
 btnPause.addEventListener("click", () => setRunning(false));

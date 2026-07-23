@@ -167,6 +167,10 @@ export function buildGameRom(): Uint8Array {
   a.bitAbs(0x2002);
   a.bpl("vwait2");
 
+  // APU: パルス波 1/2 を有効化 (効果音用)
+  a.ldaImm(0x03);
+  a.staAbs(0x4015);
+
   a.jsr("loadPalettes");
   a.jsr("showTitle");
 
@@ -225,6 +229,7 @@ export function buildGameRom(): Uint8Array {
   a.bcc("spNext");
   a.ldaImm(2); // 全レベルクリア
   a.staZp(gameState);
+  a.jsr("sfxClear");
   a.jmp("mainLoop");
   a.label("spNext");
   a.jsr("initLevel");
@@ -300,6 +305,7 @@ export function buildGameRom(): Uint8Array {
   a.staZp(velYHi);
   a.ldaImm(0);
   a.staZp(onGround);
+  a.jsr("sfxJump");
   a.label("mpDone");
   a.rts();
 
@@ -469,6 +475,7 @@ export function buildGameRom(): Uint8Array {
   a.ldaImm(0);
   a.staZpX(sporeAct);
   a.decZp(sporeCount);
+  a.jsr("sfxCollect");
   a.label("csNext");
   a.inx();
   a.cpxImm(3);
@@ -815,6 +822,52 @@ export function buildGameRom(): Uint8Array {
   a.rolZp(pad);   // キャリー → pad へシフトイン
   a.dex();
   a.bne("rpLoop");
+  a.rts();
+
+  // ================= 効果音 =================
+
+  // ジャンプ: パルス1 をスイープで上昇させる「ピュン」
+  a.label("sfxJump");
+  a.ldaImm(0x44); // duty 25%, エンベロープ減衰 (period 4)
+  a.staAbs(0x4000);
+  a.ldaImm(0x8b); // スイープ有効, negate (音程上昇), shift 3
+  a.staAbs(0x4001);
+  a.ldaImm(0xd0); // タイマー $1D0 ≈ 233Hz から上昇
+  a.staAbs(0x4002);
+  a.ldaImm(0x49); // 長さ 8 (約130ms) | タイマー上位 1
+  a.staAbs(0x4003);
+  a.rts();
+
+  // 胞子収集: パルス2 の高い「ピロン」
+  a.label("sfxCollect");
+  a.ldaImm(0x42); // duty 25%, エンベロープ減衰 (period 2)
+  a.staAbs(0x4004);
+  a.ldaImm(0x00); // スイープなし
+  a.staAbs(0x4005);
+  a.ldaImm(0x7e); // タイマー 126 ≈ 880Hz (A5)
+  a.staAbs(0x4006);
+  a.ldaImm(0x48); // 長さ 8 | タイマー上位 0
+  a.staAbs(0x4007);
+  a.rts();
+
+  // クリア: パルス 1+2 で和音 (C5 + E5) を約 2 秒
+  a.label("sfxClear");
+  a.ldaImm(0x47); // ゆっくり減衰
+  a.staAbs(0x4000);
+  a.ldaImm(0x00);
+  a.staAbs(0x4001);
+  a.ldaImm(0xd5); // C5 (523Hz)
+  a.staAbs(0x4002);
+  a.ldaImm(0x08); // 長さ 254
+  a.staAbs(0x4003);
+  a.ldaImm(0x47);
+  a.staAbs(0x4004);
+  a.ldaImm(0x00);
+  a.staAbs(0x4005);
+  a.ldaImm(0xa9); // E5 (659Hz)
+  a.staAbs(0x4006);
+  a.ldaImm(0x08);
+  a.staAbs(0x4007);
   a.rts();
 
   // ================= NMI (毎フレーム VBlank) =================

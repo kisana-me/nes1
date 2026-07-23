@@ -6,6 +6,7 @@ import { Ppu } from "./ppu";
 import { Cartridge } from "./cartridge";
 import { Mapper } from "./mappers/mapper";
 import { StandardController } from "./controller";
+import { Apu } from "./apu";
 
 export class Nes {
   readonly cart: Cartridge;
@@ -13,6 +14,7 @@ export class Nes {
   readonly bus: Bus;
   readonly cpu: Cpu;
   readonly ppu: Ppu;
+  readonly apu: Apu;
   readonly controller: StandardController;
 
   constructor(romData: Uint8Array) {
@@ -22,9 +24,11 @@ export class Nes {
     this.cpu = new Cpu(this.bus);
     this.ppu = new Ppu(this.mapper);
     this.controller = new StandardController();
+    this.apu = new Apu((addr) => this.bus.read(addr)); // DMC がサンプルを読むため
 
     // 配線
     this.bus.ppu = this.ppu;
+    this.bus.apu = this.apu;
     this.bus.controller = this.controller;
     this.ppu.onNmi = () => this.cpu.requestNmi();
     // OAM DMA は CPU を 513 サイクル停止させる
@@ -57,8 +61,9 @@ export class Nes {
     for (let i = 0; i < cpuCycles * 3; i++) {
       this.ppu.tick();
     }
-    // マッパー (MMC3 など) の IRQ を CPU へ伝える
-    this.cpu.setIrqLine(this.mapper.irqPending());
+    this.apu.tick(cpuCycles);
+    // マッパー (MMC3 など) と APU の IRQ を CPU へ伝える
+    this.cpu.setIrqLine(this.mapper.irqPending() || this.apu.irqPending());
     return cpuCycles;
   }
 
